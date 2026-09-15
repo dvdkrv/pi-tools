@@ -53,13 +53,13 @@ Automatic cleanup removes only clean Pi-managed worktrees and preserves their br
 Install the immutable signed release over SSH:
 
 ```bash
-pi install git:git@github.com/dvdkrv/pi-tools.git@v0.1.0
+pi install git:git@github.com:dvdkrv/pi-tools.git@v0.1.1
 ```
 
 Try it for one process without changing persistent package settings:
 
 ```bash
-pi -e git:git@github.com/dvdkrv/pi-tools.git@v0.1.0
+pi -e git:git@github.com:dvdkrv/pi-tools.git@v0.1.1
 ```
 
 The separate Superpowers package is intentionally not bundled. Install its independently pinned release if desired.

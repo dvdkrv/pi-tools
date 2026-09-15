@@ -14,7 +14,7 @@ const extensions = [
 
 test('root manifest exposes one Pi package', () => {
   assert.equal(pkg.name, 'pi-tools');
-  assert.equal(pkg.version, '0.1.0');
+  assert.equal(pkg.version, '0.1.1');
   assert.equal(pkg.private, true);
   assert.equal(pkg.license, 'MIT');
   assert.deepEqual(pkg.pi?.extensions, extensions);
@@ -48,8 +48,8 @@ test('public documentation covers installation and safety boundaries', () => {
   assert.match(readme, /NATS Server 2\.14\.6/);
   assert.match(readme, /loopback/i);
   assert.match(readme, /human-controlled/i);
-  assert.match(readme, /pi install git:git@github\.com\/dvdkrv\/pi-tools\.git@v0\.1\.0/);
-  assert.match(readme, /pi -e git:git@github\.com\/dvdkrv\/pi-tools\.git@v0\.1\.0/);
+  assert.match(readme, /pi install git:git@github\.com:dvdkrv\/pi-tools\.git@v0\.1\.1/);
+  assert.match(readme, /pi -e git:git@github\.com:dvdkrv\/pi-tools\.git@v0\.1\.1/);
 });
 
 test('root scripts include the production install matrix', () => {
