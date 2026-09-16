@@ -639,6 +639,22 @@ test('stationary tool guidance directs agents to the API without dynamic identit
   assert.match(tool.promptGuidelines.join('\n'), /request.*exact.*reply/i);
 });
 
+test('human inbox offers one exact reply only for a delivered open request', async t => {
+  const f = fixture(t); await f.commands.get('messages').handler('join review', f.ctx); p.arm(f.state, f.group, 2);
+  const request = p.prepareMessage(f.state, p.leaseOf(f.other), { kind: 'request', toPeerId: f.backend.peer.id, text: 'review' }, 'human-request');
+  const receipt = p.admit(f.state, p.leaseOf(f.state.peers[f.backend.peer.id]), request.id); p.observe(f.state, p.leaseOf(f.state.peers[f.backend.peer.id]), receipt);
+  let step = 0;
+  f.ctx.ui.select = async (title, choices) => {
+    if (title.startsWith('Inbox:')) return step++ === 0 ? choices[0] : 'Close';
+    if (title.includes(request.id)) { assert.ok(choices.includes('Reply to request')); return 'Reply to request'; }
+    return choices[0];
+  };
+  f.ctx.ui.editor = async title => { assert.match(title, /reply/i); return 'human response'; };
+  await f.commands.get('messages').handler('inbox', f.ctx);
+  const reply = Object.values(f.state.messages).find(message => message.kind === 'reply');
+  assert.equal(reply.inReplyTo, request.id); assert.equal(reply.recipientPeerId, f.other.id);
+});
+
 test('human route controls change initiation only and agents cannot invoke them', async t => {
   const f = fixture(t); await f.commands.get('messages').handler('join review', f.ctx);
   const self = f.backend.peer.id; const groupBefore = { ...f.state.groups[f.group.id] };

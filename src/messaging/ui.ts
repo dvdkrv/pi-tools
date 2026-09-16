@@ -135,9 +135,14 @@ export async function handleMessages(args: string, ctx: ExtensionCommandContext,
       if (!choice || choice === 'Close') return;
       if (choice === 'Older') { offset += 20; continue; }
       if (choice === 'Newer') { offset = Math.max(0, offset - 20); continue; }
-      const message = page[labels.indexOf(choice)];
-      const action = await ask(ctx.ui.select(`${message.id}: ${message.state}`, ['View body', ...(message.state === 'queued' ? ['Cancel queued message'] : []), ...(message.state === 'attempted' ? ['Dismiss uncertain attempt'] : []), 'Compose new message', 'Back']));
-      if (action === 'View body' || action === 'Compose new message') {
+      const message = page[labels.indexOf(choice)]; const self = b.peer;
+      const canReply = message.kind === 'request' && message.state === 'observed' && message.conversationState === 'awaiting-reply' && self?.id === message.recipientPeerId;
+      const action = await ask(ctx.ui.select(`${message.id}: ${message.state}`, ['View body', ...(canReply ? ['Reply to request'] : []), ...(message.state === 'queued' ? ['Cancel queued message'] : []), ...(message.state === 'attempted' ? ['Dismiss uncertain attempt'] : []), 'Compose new message', 'Back']));
+      if (action === 'Reply to request') {
+        if (!self) fail('participation', 'Join this group before replying');
+        const text = await ask(ctx.ui.editor('Reply to request (exactly one; Escape cancels)', ''));
+        if (text?.trim()) await b.send({ kind: 'reply', toPeerId: message.senderPeerId, text, inReplyTo: message.id }, randomUUID());
+      } else if (action === 'View body' || action === 'Compose new message') {
         const body = await b.readBody(group, message.id);
         if (action === 'View body') await ask(ctx.ui.editor('Inspect message — edits discarded, never sent to the model', safeText(body?.text ?? '[Body unavailable: publication may not have completed. The queued reservation can be canceled.]')));
         else if (body) await compose(group, body.text);

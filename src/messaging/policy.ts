@@ -61,7 +61,7 @@ function validateLedgerVersion(value: unknown, authorityId: string, version: 2):
 function validateLedgerVersion(value: unknown, authorityId: string, version: 3): asserts value is Ledger;
 function validateLedgerVersion(value: unknown, authorityId: string, version: 1 | 2 | 3): void {
   if (!isRecord(value) || !hasFields(value, ['version', 'authorityId', 'sequence', 'groups', 'peers', 'messages']) || value.version !== version || !isRecord(value.groups) || !isRecord(value.peers) || !isRecord(value.messages) || !isNonnegativeInteger(value.sequence)) fail('corrupt', 'Unsupported or corrupt messaging ledger');
-  if (version === 3 && (!isRecord(value.routes) || Object.keys(value.routes).length > 1024)) fail('corrupt', 'Invalid route ledger');
+  if (version === 3 && (!isRecord(value.routes) || Object.keys(value.routes).length > 8192)) fail('corrupt', 'Invalid route ledger');
   if (value.authorityId !== authorityId) fail('authority', 'Messaging authority mismatch; refusing replacement state');
   const groups = value.groups; const peers = value.peers; const messages = value.messages;
   if (Object.keys(groups).length > 32 || Object.keys(peers).length > 512 || Object.keys(messages).length > 2000) fail('corrupt', 'Ledger exceeds bounds');
@@ -92,6 +92,7 @@ function validateLedgerVersion(value: unknown, authorityId: string, version: 1 |
         const request = typeof route.requestMessageId === 'string' ? messages[route.requestMessageId] : undefined;
         if (!isRecord(request) || request.kind !== 'request' || request.senderPeerId !== route.toPeerId || request.recipientPeerId !== route.fromPeerId || !['pending-delivery', 'awaiting-reply'].includes(String(request.conversationState))) fail('corrupt', 'Invalid reply-only route request');
         if ((route.observedAt === undefined) !== (route.expiresAt === undefined) || (route.observedAt !== undefined && (!isFiniteNumber(route.observedAt) || !isFiniteNumber(route.expiresAt)))) fail('corrupt', 'Invalid reply-only route deadline');
+        if ((request.conversationState === 'awaiting-reply') !== (route.expiresAt !== undefined)) fail('corrupt', 'Reply-only route deadline does not match request observation');
       } else if (route.requestMessageId !== undefined || route.observedAt !== undefined || route.expiresAt !== undefined) fail('corrupt', 'Non-reply route has reply metadata');
     }
   }
@@ -101,6 +102,8 @@ function validateLedgerVersion(value: unknown, authorityId: string, version: 1 |
     if (!isRecord(sender) || !isRecord(recipient) || sender.groupId !== message.groupId || recipient.groupId !== message.groupId || !['queued', 'attempted', 'observed', 'canceled', 'dismissed', 'expired', 'terminal-unresolved'].includes(typeof message.state === 'string' ? message.state : '') || (version === 3 && !['legacy', 'notice', 'request', 'reply'].includes(String(message.kind))) || !isNonnegativeInteger(message.sequence) || message.sequence < 1 || message.sequence > value.sequence || typeof message.senderName !== 'string' || typeof message.requestKey !== 'string' || typeof message.hash !== 'string' || !/^[0-9a-f]{64}$/.test(message.hash) || !isFiniteNumber(message.createdAt)) fail('corrupt', 'Invalid message ledger');
     if ((message.inReplyTo !== undefined && (typeof message.inReplyTo !== 'string' || !uuid.test(message.inReplyTo))) || (message.attemptId !== undefined && (typeof message.attemptId !== 'string' || !uuid.test(message.attemptId))) || (message.attemptRound !== undefined && !isNonnegativeInteger(message.attemptRound)) || (message.attemptedAt !== undefined && !isFiniteNumber(message.attemptedAt)) || (message.observedAt !== undefined && !isFiniteNumber(message.observedAt)) || (message.terminalAt !== undefined && !isFiniteNumber(message.terminalAt)) || (message.conversationTerminalAt !== undefined && !isFiniteNumber(message.conversationTerminalAt)) || (message.replyMessageId !== undefined && (typeof message.replyMessageId !== 'string' || !uuid.test(message.replyMessageId)))) fail('corrupt', 'Invalid optional message ledger');
     if (version === 3 && message.kind === 'request' && !['pending-delivery', 'awaiting-reply', 'reply-pending', 'answered', 'unanswered'].includes(String(message.conversationState))) fail('corrupt', 'Invalid request conversation ledger');
+    if (version === 3 && message.kind === 'request' && ['answered', 'unanswered'].includes(String(message.conversationState)) && !isFiniteNumber(message.conversationTerminalAt)) fail('corrupt', 'Terminal request conversation lacks timestamp');
+    if (version === 3 && ['observed', 'canceled', 'dismissed', 'expired', 'terminal-unresolved'].includes(String(message.state)) && !isFiniteNumber(message.terminalAt)) fail('corrupt', 'Terminal message lacks timestamp');
     if (version === 3 && message.kind !== 'request' && (message.conversationState !== undefined || message.conversationTerminalAt !== undefined || message.replyMessageId !== undefined)) fail('corrupt', 'Invalid non-request conversation ledger');
     if (version === 3 && message.kind === 'reply' && message.inReplyTo === undefined) fail('corrupt', 'Reply requires request reference');
     if (version === 3 && message.kind === 'notice' && message.inReplyTo !== undefined) fail('corrupt', 'Notice cannot reference a reply');
@@ -136,7 +139,11 @@ export function migrateLedger(value: unknown, authorityId: string, _now = Date.n
   const ledger: Ledger = {
     version: 3, authorityId: value.authorityId, sequence: value.sequence,
     groups: Object.fromEntries(Object.entries(value.groups).map(([id, group]) => [id, { ...group }])), peers, routes,
-    messages: Object.fromEntries(Object.entries(value.messages).map(([id, message]) => [id, { ...message, kind: 'legacy' as const }])),
+    messages: Object.fromEntries(Object.entries(value.messages).map(([id, message]) => {
+      const terminal = ['observed', 'canceled', 'dismissed'].includes(message.state) && message.terminalAt === undefined
+        ? { terminalAt: message.observedAt ?? message.attemptedAt ?? message.createdAt } : {};
+      return [id, { ...message, ...terminal, kind: 'legacy' as const }];
+    })),
   };
   validateLedger(ledger, authorityId); return { ledger, migrated: true };
 }
