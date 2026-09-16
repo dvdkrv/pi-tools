@@ -778,11 +778,10 @@ Check every design invariant, especially route races, weighted reservations, fin
 Run:
 
 ```bash
-rg -n '/home/|DataDog|github-personal|ssh_auth_sock|NATS_TOKEN|leaseId.*JSON|stringify\(.*config' README.md docs src extensions tests scripts || true
 npm run check
 ```
 
-Expected: only intentional generic test/code references; no secrets, personal paths, private state, or company-specific examples.
+Expected: the repository scanner reports no secrets, personal paths, private state, or organization-specific examples.
 
 - [ ] **Step 3: Run final clean verification**
 
