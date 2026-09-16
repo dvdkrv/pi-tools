@@ -44,7 +44,7 @@ function fixture(t) {
     readBody: async (_g, id) => { lifecycle.bodyReads++; return p.envelope(state, state.messages[id], bodies.get(id)); },
     resolveMessage: async (g, id, action) => p.resolveMessage(state, g, id, action),
     revoke: async (g, id) => p.revokePeer(state, g, id),
-    prune: async (g, execute) => { const ids = p.prunable(state, g, Infinity); if (execute) for (const id of ids) delete state.messages[id]; return ids; },
+    prune: async (g, execute, before = Date.now() - p.HISTORY_TTL_MS) => { const ids = p.prunable(state, g, before); if (execute) for (const id of ids) delete state.messages[id]; return ids; },
   };
   const pi = {
     on: (name, handler) => events.set(name, handler), registerCommand: (name, command) => commands.set(name, command),
@@ -521,6 +521,7 @@ test('agent sends require one explicit static protocol kind', async t => {
   const tool = f.tools.get('peer_message');
   assert.deepEqual(tool.parameters.properties.kind.anyOf?.map(item => item.const) ?? tool.parameters.properties.kind.enum, ['notice', 'request', 'reply']);
   await assert.rejects(execute(f, 'send', { toPeerId: f.other.id, text: 'ambiguous' }), /kind/i);
+  await assert.rejects(execute(f, 'peers', { kind: 'notice' }), /kind|send/i);
   const sent = JSON.parse((await execute(f, 'send', { kind: 'notice', toPeerId: f.other.id, text: 'one way' })).content[0].text);
   assert.equal(f.state.messages[sent.id].kind, 'notice');
 });
@@ -677,7 +678,7 @@ test('human dismissal, revocation and pruning preserve spent allowance', async t
   await f.commands.get('messages').handler('revoke', f.ctx);
   assert.equal(f.state.peers[f.other.id].active, false);
   await f.commands.get('messages').handler('prune', f.ctx);
-  assert.equal(Object.keys(f.state.messages).length, 0);
+  assert.equal(Object.keys(f.state.messages).length, 1, 'recent terminal history is retained for seven days');
   assert.equal(f.state.groups[f.group.id].used, 1);
 });
 

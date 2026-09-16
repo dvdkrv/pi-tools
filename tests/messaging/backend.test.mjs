@@ -398,9 +398,10 @@ test('explicit prune removes terminal history regardless of sender activity', as
   const m = await a.send({ kind: 'notice', toPeerId: b.peer.id, text: 'terminal' }, 'one');
   await a.resolveMessage(g, m.id, 'canceled');
   const pending = await a.send({ kind: 'notice', toPeerId: b.peer.id, text: 'pending' }, 'two');
-  assert.deepEqual(await a.prune(g), [m.id]);
-  await a.leave(); assert.deepEqual(await b.prune(g), [m.id, pending.id]);
-  assert.deepEqual(await b.prune(g, true), [m.id, pending.id]);
+  assert.deepEqual(await a.prune(g), [], 'default retention keeps recent terminal history');
+  assert.deepEqual(await a.prune(g, false, Infinity), [m.id]);
+  await a.leave(); assert.deepEqual(await b.prune(g, false, Infinity), [m.id, pending.id]);
+  assert.deepEqual(await b.prune(g, true, Infinity), [m.id, pending.id]);
   assert.equal((await b.listMessages(g)).length, 0);
   assert.equal((await b.getGroupSummary(g)).limit, 2);
 });

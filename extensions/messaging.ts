@@ -120,6 +120,7 @@ export function registerMessaging(
       tui(ctx); signal?.throwIfAborted();
       params = preparePeerMessageArguments(params);
       if (!['peers', 'status', 'send', 'rename'].includes(params.action)) fail('validation', 'Unknown peer_message action');
+      if (params.action !== 'send' && params.kind !== undefined) fail('validation', 'kind is accepted only for send');
       const b = backend; const group = joined; const generation = epoch;
       if (!b?.peer || !group) fail('participation', 'Explicitly join a messaging group first');
       const self = b.peer; const peerId = self.id;

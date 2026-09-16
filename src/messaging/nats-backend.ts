@@ -397,7 +397,7 @@ class NatsBackend implements MessagingBackend {
     await this.change(state => policy.revokePeer(state, ref, id));
     await this.deleteConsumer(consumerName(id));
   }
-  async prune(ref: GroupRef, execute = false, before = Infinity): Promise<string[]> {
+  async prune(ref: GroupRef, execute = false, before = Date.now() - policy.HISTORY_TTL_MS): Promise<string[]> {
     const { state } = await this.snapshot(); const ids = policy.prunable(state, ref, before);
     if (!execute) return ids;
     for (const id of ids) await this.io(() => this.jsm.streams.purge(STREAM, { filter: subject(state.messages[id]) }));

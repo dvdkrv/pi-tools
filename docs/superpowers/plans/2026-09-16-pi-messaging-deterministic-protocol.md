@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Work only in `/home/bits/personal/pi-tools/.worktrees/messaging-protocol-v3` on `feat/messaging-protocol-v3`.
+- Work only in the isolated `feat/messaging-protocol-v3` worktree.
 - Do not dispatch subagents; execution and review are inline.
 - Do not connect to or mutate the live broker, ledger, groups, members, messages, allowance, configuration, or installed package.
 - Tests use only pure fixtures, temporary homes, scripted Pi contexts, and disposable authenticated NATS brokers.

@@ -104,7 +104,18 @@ function validateLedgerVersion(value: unknown, authorityId: string, version: 1 |
     if (version === 3 && message.kind !== 'request' && (message.conversationState !== undefined || message.conversationTerminalAt !== undefined || message.replyMessageId !== undefined)) fail('corrupt', 'Invalid non-request conversation ledger');
     if (version === 3 && message.kind === 'reply' && message.inReplyTo === undefined) fail('corrupt', 'Reply requires request reference');
     if (version === 3 && message.kind === 'notice' && message.inReplyTo !== undefined) fail('corrupt', 'Notice cannot reference a reply');
-    if (['attempted', 'observed', 'dismissed'].includes(typeof message.state === 'string' ? message.state : '') && (!hasFields(message, ['attemptId', 'attemptRound', 'attemptedAt']) || typeof message.attemptId !== 'string' || !uuid.test(message.attemptId) || !isNonnegativeInteger(message.attemptRound) || !isFiniteNumber(message.attemptedAt))) fail('corrupt', 'Invalid attempt ledger');
+    if (['attempted', 'observed', 'dismissed', 'terminal-unresolved'].includes(typeof message.state === 'string' ? message.state : '') && (!hasFields(message, ['attemptId', 'attemptRound', 'attemptedAt']) || typeof message.attemptId !== 'string' || !uuid.test(message.attemptId) || !isNonnegativeInteger(message.attemptRound) || !isFiniteNumber(message.attemptedAt))) fail('corrupt', 'Invalid attempt ledger');
+  }
+  if (version === 3) for (const message of Object.values(messages)) {
+    if (!isRecord(message)) continue;
+    if (message.kind === 'reply') {
+      const request = typeof message.inReplyTo === 'string' ? messages[message.inReplyTo] : undefined;
+      if (!isRecord(request) || request.kind !== 'request' || request.senderPeerId !== message.recipientPeerId || request.recipientPeerId !== message.senderPeerId || request.replyMessageId !== message.id) fail('corrupt', 'Reply linkage is inconsistent');
+    }
+    if (message.kind === 'request' && message.replyMessageId !== undefined) {
+      const reply = messages[String(message.replyMessageId)];
+      if (!isRecord(reply) || reply.kind !== 'reply' || reply.inReplyTo !== message.id) fail('corrupt', 'Request reply linkage is inconsistent');
+    }
   }
 }
 export function validateLedger(value: unknown, authorityId: string): asserts value is Ledger { validateLedgerVersion(value, authorityId, 3); }
@@ -234,15 +245,23 @@ export function arm(s: Ledger, ref: GroupRef, limit: number): void {
   g.round++; g.limit = limit; g.used = 0; g.mode = 'armed';
 }
 export function pause(s: Ledger, ref: GroupRef): void { groupOf(s, ref).mode = 'paused'; }
-export function setRoute(s: Ledger, ref: GroupRef, fromPeerId: string, toPeerId: string, mode: 'open' | 'closed', recoverReplyOnly = false, now = Date.now()): void {
+export function setRoute(s: Ledger, ref: GroupRef, fromPeerId: string, toPeerId: string, mode: 'open' | 'closed', recoverConversation = false, now = Date.now()): void {
   const group = groupOf(s, ref); const from = activePeer(s, fromPeerId); const to = activePeer(s, toPeerId);
   if (from.id === to.id || from.groupId !== group.id || to.groupId !== group.id) fail('validation', 'Route members must be distinct current group members');
   const key = routeKey(from.id, to.id); const route = s.routes[key]; if (!route) fail('missing', 'Messaging route does not exist');
-  if (route.mode === 'reply-only') {
-    if (!recoverReplyOnly) fail('recovery', 'Reply-only conversation requires confirmed recovery');
-    const request = route.requestMessageId ? s.messages[route.requestMessageId] : undefined;
-    if (!request || request.kind !== 'request' || !['pending-delivery', 'awaiting-reply'].includes(request.conversationState ?? '')) fail('corrupt', 'Reply-only route is inconsistent');
-    request.conversationState = 'unanswered'; request.conversationTerminalAt = lifecycleTime(now);
+  const request = Object.values(s.messages).find(message => message.kind === 'request' && [from.id, to.id].includes(message.senderPeerId) && [from.id, to.id].includes(message.recipientPeerId) && ['pending-delivery', 'awaiting-reply', 'reply-pending'].includes(message.conversationState ?? ''));
+  if (route.mode === 'reply-only' || request) {
+    if (!recoverConversation) fail('recovery', 'Open conversation requires confirmed recovery');
+    if (!request) fail('corrupt', 'Conversation route is inconsistent');
+    const recoveredAt = lifecycleTime(now); request.conversationState = 'unanswered'; request.conversationTerminalAt = recoveredAt;
+    if (request.state === 'queued') { request.state = 'expired'; request.terminalAt = recoveredAt; }
+    else if (request.state === 'attempted') { request.state = 'terminal-unresolved'; request.terminalAt = recoveredAt; }
+    if (request.replyMessageId) {
+      const reply = s.messages[request.replyMessageId];
+      if (!reply || reply.kind !== 'reply') fail('corrupt', 'Conversation reply is inconsistent');
+      if (reply.state === 'queued') { reply.state = 'expired'; reply.terminalAt = recoveredAt; }
+      else if (reply.state === 'attempted') { reply.state = 'terminal-unresolved'; reply.terminalAt = recoveredAt; }
+    }
   }
   s.routes[key] = { groupId: group.id, fromPeerId: from.id, toPeerId: to.id, mode };
 }
@@ -262,7 +281,7 @@ export function prepareMessage(s: Ledger, senderLease: ParticipantLease, input: 
     if (!repliedRequest || repliedRequest.kind !== 'request' || repliedRequest.senderPeerId !== recipient.id || repliedRequest.recipientPeerId !== sender.id || repliedRequest.conversationState !== 'awaiting-reply' || !route || route.mode !== 'reply-only' || route.requestMessageId !== repliedRequest.id || route.expiresAt === undefined || createdAt >= route.expiresAt) fail('reply', 'Reply capability is unavailable or expired');
   } else if (normalized.kind && (!route || route.mode !== 'open')) fail('route', 'Messaging route is closed');
   if (['notice', 'request'].includes(normalized.kind ?? '') && Object.values(s.messages).some(message => message.senderPeerId === recipient.id && message.recipientPeerId === sender.id && unresolved(message))) fail('route', 'Reverse traffic is already pending');
-  if (normalized.kind === 'request' && Object.values(s.messages).some(message => message.kind === 'request' && [sender.id, recipient.id].includes(message.senderPeerId) && [sender.id, recipient.id].includes(message.recipientPeerId) && ['pending-delivery', 'awaiting-reply', 'reply-pending'].includes(message.conversationState ?? ''))) fail('route', 'Another conversation is already open');
+  if (['notice', 'request'].includes(normalized.kind ?? '') && Object.values(s.messages).some(message => message.kind === 'request' && [sender.id, recipient.id].includes(message.senderPeerId) && [sender.id, recipient.id].includes(message.recipientPeerId) && ['pending-delivery', 'awaiting-reply', 'reply-pending'].includes(message.conversationState ?? ''))) fail('route', 'Another conversation is already open');
   if (Object.values(s.messages).some(message => message.senderPeerId === sender.id && unresolved(message))) fail('busy', 'Sender already has an unresolved outbound message');
   const group = s.groups[sender.groupId];
   const queued = queuedInGroup(s, group.id);

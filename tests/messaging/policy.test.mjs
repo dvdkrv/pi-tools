@@ -60,6 +60,15 @@ test('only the addressed recipient can consume an observed request with one repl
   assert.throws(() => p.prepareMessage(f.state, lease(f.b), { kind: 'reply', toPeerId: f.a.id, text: 'again', inReplyTo: request.id }, 'duplicate', 3_001), /reply|capability|route/i);
 });
 
+test('an open request prevents its sender from replacing the reply capability with a notice', () => {
+  const f = fixture(); p.arm(f.state, f.group, 3);
+  const request = p.prepareMessage(f.state, lease(f.a), { kind: 'request', toPeerId: f.b.id, text: 'review' }, 'request', 1_000);
+  const reservation = p.admit(f.state, lease(f.b), request.id, 1_100); p.observe(f.state, lease(f.b), reservation, 1_200);
+  const before = structuredClone(f.state);
+  assert.throws(() => p.prepareMessage(f.state, lease(f.a), { kind: 'notice', toPeerId: f.b.id, text: 'replace it' }, 'notice', 1_300), /conversation|request|route/i);
+  assert.deepEqual(f.state, before);
+});
+
 test('only confirmed human recovery can replace a reply-only route', () => {
   const f = fixture(); p.arm(f.state, f.group, 2);
   const request = p.prepareMessage(f.state, lease(f.a), { kind: 'request', toPeerId: f.b.id, text: 'review' }, 'request');
@@ -68,6 +77,18 @@ test('only confirmed human recovery can replace a reply-only route', () => {
   assert.equal(f.state.routes[p.routeKey(f.b.id, f.a.id)].mode, 'open');
   assert.equal(f.state.messages[request.id].conversationState, 'unanswered');
   assert.equal(f.state.messages[request.id].conversationTerminalAt, 2_000);
+  assert.equal(f.state.messages[request.id].state, 'expired'); assert.equal(p.reservedSlots(f.state, f.group.id), 0);
+});
+
+test('closed routes with reply-pending work also require confirmed recovery before reopening', () => {
+  const f = fixture(); p.arm(f.state, f.group, 2);
+  const request = p.prepareMessage(f.state, lease(f.a), { kind: 'request', toPeerId: f.b.id, text: 'review' }, 'request', 1_000);
+  p.observe(f.state, lease(f.b), p.admit(f.state, lease(f.b), request.id, 1_100), 1_200);
+  const reply = p.prepareMessage(f.state, lease(f.b), { kind: 'reply', toPeerId: f.a.id, text: 'done', inReplyTo: request.id }, 'reply', 1_300);
+  assert.throws(() => p.setRoute(f.state, f.group, f.a.id, f.b.id, 'open', false, 1_400), /recover|conversation/i);
+  p.setRoute(f.state, f.group, f.a.id, f.b.id, 'open', true, 1_400);
+  assert.equal(request.conversationState, 'unanswered'); assert.equal(reply.state, 'expired');
+  assert.equal(p.reservedSlots(f.state, f.group.id), 0);
 });
 
 test('canceling or dismissing protocol work closes its conversation without refunding attempts', () => {

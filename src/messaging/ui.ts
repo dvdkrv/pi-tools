@@ -118,8 +118,9 @@ export async function handleMessages(args: string, ctx: ExtensionCommandContext,
     if (!action || action === 'Cancel') return;
     const mode = action.startsWith('Open') ? 'open' : 'closed';
     let recover = false;
-    if (route.mode === 'reply-only') {
-      recover = await ask(ctx.ui.confirm('Recover and replace reply-only route?', 'Marks the open request unanswered and releases only its unused reply reservation. Spent credits are not refunded.'));
+    const openRequest = (await b.listMessages(group)).find(message => message.kind === 'request' && [route.fromPeerId, route.toPeerId].includes(message.senderPeerId) && [route.fromPeerId, route.toPeerId].includes(message.recipientPeerId) && ['pending-delivery', 'awaiting-reply', 'reply-pending'].includes(message.conversationState ?? ''));
+    if (route.mode === 'reply-only' || openRequest) {
+      recover = await ask(ctx.ui.confirm('Recover and replace open conversation?', 'Marks the open request unanswered, terminalizes its queued or uncertain protocol work, and releases only unused reservations. Spent credits are not refunded.'));
       if (!recover) return;
     } else if (!await ask(ctx.ui.confirm(`${mode === 'open' ? 'Open' : 'Close'} this messaging direction?`, 'This changes initiation permission only and grants no allowance.'))) return;
     await b.setRoute(group, route.fromPeerId, route.toPeerId, mode, recover);
