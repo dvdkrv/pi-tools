@@ -16,9 +16,9 @@ export interface MessageStatus {
   inReplyTo?: string; attemptId?: string; attemptRound?: number; attemptedAt?: number; observedAt?: number; terminalAt?: number;
 }
 export interface Envelope {
-  version: 1; authorityId: string; groupId: string; messageId: string;
+  version: 1 | 2; authorityId: string; groupId: string; messageId: string;
   senderPeerId: string; recipientPeerId: string; senderName: string;
-  createdAt: number; text: string; inReplyTo?: string;
+  createdAt: number; text: string; kind?: Exclude<MessageKind, 'legacy'>; inReplyTo?: string;
 }
 export interface Reservation { group: GroupRef; peerId: string; message: MessageStatus; attemptId: string; round: number; envelope?: Envelope }
 export interface SendInput { kind?: Exclude<MessageKind, 'legacy'>; toPeerId: string; text: string; inReplyTo?: string }
@@ -34,11 +34,13 @@ export interface MessagingBackend extends MessagingReader {
   createGroup(label: string): Promise<GroupRef>;
   join(ref: GroupRef, info: { sessionId: string; displayName: string }): Promise<Peer>;
   resume(ref: GroupRef, peerId: string, sessionId: string): Promise<Peer>;
+  takeover(ref: GroupRef, peerId: string, sessionId: string): Promise<Peer>;
   suspend(): Promise<void>;
   leave(): Promise<void>;
   heartbeat(displayName?: string): Promise<void>;
   arm(ref: GroupRef, limit: number): Promise<void>;
   pause(ref: GroupRef): Promise<void>;
+  maintain(ref: GroupRef, now?: number): Promise<void>;
   peers(ref: GroupRef): Promise<Peer[]>;
   send(input: SendInput, requestKey: string): Promise<MessageStatus>;
   reserve(): Promise<Reservation[]>;

@@ -107,6 +107,23 @@ test('resumes a preserved durable inbox as one ordered three-message batch', asy
   assert.ok((await replacement.listMessages(f.g)).every(message => message.state === 'observed'));
 });
 
+test('human-confirmed takeover attaches a new session to the same durable member', async t => {
+  const f = await fixture(t); if (!f) return;
+  await f.a.arm(f.g, 1);
+  const original = f.b.peer;
+  const queued = await f.a.send({ kind: 'notice', toPeerId: original.id, text: 'preserved for takeover' }, 'takeover-message');
+  const beforeInfo = await f.a.jsm.consumers.info('PM_MESSAGES', consumerName(original.id));
+  await f.b.suspend(); await f.b.close();
+  const replacement = await connectBackend(f.config); t.after(() => replacement.close());
+  const taken = await replacement.takeover(f.g, original.id, 'replacement-session');
+  assert.equal(taken.id, original.id);
+  assert.equal(taken.sessionId, 'replacement-session');
+  assert.equal(taken.displayName, original.displayName);
+  const afterInfo = await f.a.jsm.consumers.info('PM_MESSAGES', consumerName(original.id));
+  assert.equal(afterInfo.created.toISOString?.() ?? afterInfo.created, beforeInfo.created.toISOString?.() ?? beforeInfo.created);
+  assert.deepEqual((await replacement.reserve()).map(item => item.message.id), [queued.id]);
+});
+
 test('rejected resume of a left peer does not recreate its durable', async t => {
   const f = await fixture(t); if (!f) return;
   const departed = f.b.peer; const name = consumerName(departed.id);
@@ -204,6 +221,24 @@ test('attempted message and allowance survive suspend and resume until explicit 
   const next = await replacement.reserve();
   assert.deepEqual(next.map(item => item.message.id), [waiting.id]);
   assert.equal((await replacement.getGroupSummary(f.g)).used, 2);
+});
+
+test('real request reserves and delivers one exact reply over the durable backend', async t => {
+  const f = await fixture(t); if (!f) return;
+  await f.a.arm(f.g, 2);
+  const request = await f.a.send({ kind: 'request', toPeerId: f.b.peer.id, text: 'review this' }, 'request');
+  assert.equal((await f.a.getGroupSummary(f.g)).used, 0);
+  const requestBatch = await f.b.reserve();
+  assert.equal(requestBatch[0].envelope.kind, 'request');
+  await f.b.observe(requestBatch);
+  const reply = await f.b.send({ kind: 'reply', toPeerId: f.a.peer.id, text: 'done', inReplyTo: request.id }, 'reply');
+  const replyBatch = await f.a.reserve();
+  assert.equal(replyBatch[0].message.id, reply.id);
+  assert.equal(replyBatch[0].envelope.kind, 'reply');
+  await f.a.observe(replyBatch);
+  const messages = await f.a.listMessages(f.g);
+  assert.equal(messages.find(message => message.id === request.id).conversationState, 'answered');
+  assert.equal((await f.a.getGroupSummary(f.g)).used, 2);
 });
 
 test('real queue: opt-in, shared allowance, exact envelope, idempotency and terminal recovery', async t => {
@@ -331,6 +366,17 @@ test('hard broker restart preserves attempted records, budgets and old inboxes',
   await c.join(g, { sessionId: 'b', displayName: 'Bob' });
   assert.notEqual(c.peer.id, b.peer.id); assert.deepEqual(await c.reserve(), []);
   assert.equal((await c.readBody(g, m.id)).text, 'uncertain');
+});
+
+test('explicit maintenance expires queued work before admission while retaining inspectable history', async t => {
+  const f = await fixture(t); if (!f) return;
+  await f.a.arm(f.g, 1);
+  const message = await f.a.send({ kind: 'notice', toPeerId: f.b.peer.id, text: 'expire me' }, 'expiry');
+  await f.a.maintain(f.g, message.createdAt + 60 * 60 * 1000);
+  assert.equal((await f.a.listMessages(f.g)).find(item => item.id === message.id).state, 'expired');
+  assert.deepEqual(await f.b.reserve(), []);
+  assert.equal((await f.a.readBody(f.g, message.id)).text, 'expire me');
+  assert.equal((await f.a.getGroupSummary(f.g)).used, 0);
 });
 
 test('prune deletes only terminal inactive-sender records; pending and counters survive', async t => {

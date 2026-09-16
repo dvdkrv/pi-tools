@@ -243,12 +243,12 @@ export function prepareMessage(s: Ledger, senderLease: ParticipantLease, input: 
   }
   s.messages[m.id] = m; return m;
 }
-export function canReceive(s: Ledger, recipientLease: ParticipantLease): boolean {
-  const peer = authorizeLease(s, recipientLease); const group = s.groups[peer.groupId];
+export function canReceive(s: Ledger, recipientLease: ParticipantLease, now = Date.now()): boolean {
+  maintain(s, now); const peer = authorizeLease(s, recipientLease); const group = s.groups[peer.groupId];
   return group.mode === 'armed' && group.used < group.limit && !Object.values(s.messages).some(m => m.recipientPeerId === peer.id && m.state === 'attempted');
 }
 export function admitBatch(s: Ledger, recipientLease: ParticipantLease, messageIds: readonly string[], now = Date.now()): Reservation[] {
-  const peer = authorizeLease(s, recipientLease);
+  maintain(s, now); const peer = authorizeLease(s, recipientLease);
   if (messageIds.length === 0) return [];
   if (messageIds.length > MAX_QUEUED_PER_RECIPIENT || new Set(messageIds).size !== messageIds.length) fail('validation', 'Invalid messaging batch');
   const group = s.groups[peer.groupId];
@@ -341,8 +341,10 @@ export function summary(s: Ledger, ref: GroupRef): GroupSummary {
   return { group: refOf(g), mode: g.mode, roundNumber: g.round, limit: g.limit, used: g.used, remaining: g.limit - g.used, onlinePeers: Object.values(s.peers).filter(p => p.groupId === g.id && peerPresence(p) === 'online').length, pendingCount: Object.values(s.messages).filter(m => m.groupId === g.id && ['queued', 'attempted'].includes(m.state)).length };
 }
 export function envelope(s: Ledger, m: MessageStatus, text: string): Envelope {
-  return { version: 1, authorityId: s.authorityId, groupId: m.groupId, messageId: m.id, senderPeerId: m.senderPeerId, recipientPeerId: m.recipientPeerId, senderName: m.senderName, createdAt: m.createdAt, text, ...(m.inReplyTo ? { inReplyTo: m.inReplyTo } : {}) };
+  const protocol = m.kind === 'legacy' ? {} : { kind: m.kind, version: 2 as const };
+  return { version: 1, authorityId: s.authorityId, groupId: m.groupId, messageId: m.id, senderPeerId: m.senderPeerId, recipientPeerId: m.recipientPeerId, senderName: m.senderName, createdAt: m.createdAt, text, ...protocol, ...(m.inReplyTo ? { inReplyTo: m.inReplyTo } : {}) };
 }
 export function validateEnvelope(e: Envelope, s: Ledger, m: MessageStatus): void {
-  if (!e || e.version !== 1 || e.authorityId !== s.authorityId || e.groupId !== m.groupId || e.messageId !== m.id || e.senderPeerId !== m.senderPeerId || e.recipientPeerId !== m.recipientPeerId || e.senderName !== m.senderName || e.createdAt !== m.createdAt || e.inReplyTo !== m.inReplyTo || payloadHash({ toPeerId: e.recipientPeerId, text: e.text, ...(e.inReplyTo ? { inReplyTo: e.inReplyTo } : {}) }) !== m.hash) fail('corrupt', 'Message envelope does not match authoritative metadata');
+  const expectedVersion = m.kind === 'legacy' ? 1 : 2; const expectedKind = m.kind === 'legacy' ? undefined : m.kind;
+  if (!e || e.version !== expectedVersion || e.kind !== expectedKind || e.authorityId !== s.authorityId || e.groupId !== m.groupId || e.messageId !== m.id || e.senderPeerId !== m.senderPeerId || e.recipientPeerId !== m.recipientPeerId || e.senderName !== m.senderName || e.createdAt !== m.createdAt || e.inReplyTo !== m.inReplyTo || payloadHash({ ...(e.kind ? { kind: e.kind } : {}), toPeerId: e.recipientPeerId, text: e.text, ...(e.inReplyTo ? { inReplyTo: e.inReplyTo } : {}) }) !== m.hash) fail('corrupt', 'Message envelope does not match authoritative metadata');
 }

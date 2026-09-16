@@ -229,6 +229,35 @@ class NatsBackend implements MessagingBackend {
       return { ...participation.peer };
     } finally { this.joining = false; settle(); if (this.membershipDone === done) this.membershipDone = undefined; }
   }
+  async takeover(ref: GroupRef, peerId: string, sessionId: string): Promise<Peer> {
+    if (this.participant || this.joining) policy.fail('participation', 'Leave the current group before takeover');
+    this.joining = true;
+    let settle!: () => void;
+    const done = new Promise<void>(resolve => { settle = resolve; }); this.membershipDone = done;
+    const generation = ++this.membershipGeneration;
+    try {
+      const preflight = (await this.snapshot()).state;
+      policy.takeoverPeer(structuredClone(preflight), ref, sessionId, peerId);
+      const binding = await this.bindConsumer(peerId, ref.id);
+      if (generation !== this.membershipGeneration) policy.fail('participation', 'Takeover canceled by session departure');
+      let stored: ReturnType<typeof policy.takeoverPeer>;
+      try { stored = await this.change(state => policy.takeoverPeer(state, ref, sessionId, peerId)); }
+      catch (error) {
+        if (binding.created && !this.closed && error instanceof MessagingError && error.code !== 'uncertain') {
+          const current = (await this.snapshot()).state; const peer = current.peers[peerId];
+          if (!peer?.active || peer.groupId !== ref.id) await this.deleteConsumer(consumerName(peerId));
+        }
+        throw error;
+      }
+      const participation = { peer: policy.publicPeer(stored), lease: policy.leaseOf(stored) };
+      if (generation !== this.membershipGeneration) {
+        await this.change(state => policy.suspendPeer(state, participation.lease));
+        policy.fail('participation', 'Takeover canceled by session departure');
+      }
+      this.participant = participation; this.consumer = binding.consumer;
+      return { ...participation.peer };
+    } finally { this.joining = false; settle(); if (this.membershipDone === done) this.membershipDone = undefined; }
+  }
   async suspend(): Promise<void> {
     this.membershipGeneration++;
     const participation = this.participant; this.participant = undefined; this.consumer = undefined;
@@ -252,13 +281,16 @@ class NatsBackend implements MessagingBackend {
   async heartbeat(displayName?: string): Promise<void> {
     const participation = this.joined();
     const peer = await this.change(state => {
-      policy.heartbeat(state, participation.lease, displayName);
+      policy.maintain(state); policy.heartbeat(state, participation.lease, displayName);
       return policy.publicPeer(policy.requireLease(state, participation.lease));
     });
     participation.peer = peer;
   }
   async arm(ref: GroupRef, limit: number): Promise<void> { await this.change(s => policy.arm(s, ref, limit)); }
   async pause(ref: GroupRef): Promise<void> { await this.change(s => policy.pause(s, ref)); }
+  async maintain(ref: GroupRef, now = Date.now()): Promise<void> {
+    await this.change(state => { policy.groupOf(state, ref); policy.maintain(state, now); });
+  }
   async send(input: SendInput, requestKey: string): Promise<MessageStatus> {
     const participation = this.joined(); const { peer, lease } = participation; policy.validateInput(input);
     if (Date.now() - this.lastMaintenance > 60000) {
@@ -267,7 +299,7 @@ class NatsBackend implements MessagingBackend {
       await this.prune(policy.refOf(state.groups[peer.groupId]), true, Date.now() - 7 * 86400000);
       this.lastMaintenance = Date.now();
     }
-    const m = await this.change(state => policy.prepareMessage(state, lease, input, requestKey));
+    const m = await this.change(state => { policy.maintain(state); return policy.prepareMessage(state, lease, input, requestKey); });
     // An idempotent retry of an attempted/terminal message must not republish it.
     if (m.state !== 'queued') return m;
     const body = policy.envelope(policy.newLedger(this.authorityId), m, input.text);
