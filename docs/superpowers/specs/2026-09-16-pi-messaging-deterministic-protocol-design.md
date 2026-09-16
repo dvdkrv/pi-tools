@@ -368,10 +368,10 @@ Each batch uses one stable wrapper and stable field order. Each message includes
 - message ID;
 - stable sender attribution;
 - exact reply directive;
-- deadline where applicable;
+- the fixed reply-window duration where applicable;
 - escaped JSON-string body.
 
-Notice delivery states that replies are forbidden and the reverse route is closed. Request delivery identifies the one permitted request ID. Reply delivery states that no acknowledgement is allowed.
+Notice delivery states that replies are forbidden and the reverse route is closed. Request delivery identifies the one permitted request ID and states that its one-hour window starts when delivery observation commits. The exact resulting deadline is then available through metadata-only peer/status results; it cannot be truthfully embedded before observation. Reply delivery states that no acknowledgement is allowed.
 
 Exact batch receipt correlation remains required before `attempted` becomes `observed`. For a request, that same observation atomically starts the reply deadline.
 
