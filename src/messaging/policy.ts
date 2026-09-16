@@ -8,7 +8,11 @@ interface LegacyLedgerV2 { version: 2; authorityId: string; sequence: number; gr
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const control = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
 export const ONLINE_WINDOW_MS = 30_000;
+export const MEMBER_TTL_MS = 24 * 60 * 60 * 1000;
+export const QUEUED_TTL_MS = 60 * 60 * 1000;
+export const ATTEMPT_TTL_MS = 10 * 60 * 1000;
 export const REPLY_TTL_MS = 60 * 60 * 1000;
+export const HISTORY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_QUEUED_PER_RECIPIENT = 8;
 const unresolved = (message: MessageStatus) => message.state === 'queued' || message.state === 'attempted';
 const queuedInGroup = (state: Ledger, groupId: string) => Object.values(state.messages).filter(message => message.groupId === groupId && message.state === 'queued');
@@ -297,6 +301,32 @@ export function observeBatch(s: Ledger, recipientLease: ParticipantLease, reserv
   }
 }
 export function observe(s: Ledger, recipientLease: ParticipantLease, reservation: Reservation, now = Date.now()): void { observeBatch(s, recipientLease, [reservation], now); }
+export function maintain(s: Ledger, now = Date.now()): void {
+  const at = lifecycleTime(now);
+  for (const message of Object.values(s.messages).sort((a, b) => a.sequence - b.sequence)) {
+    if (message.state === 'queued' && at >= message.createdAt + QUEUED_TTL_MS) {
+      message.state = 'expired'; message.terminalAt = at;
+      if (message.kind === 'request') { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; }
+      if (message.kind === 'reply' && message.inReplyTo && s.messages[message.inReplyTo]?.kind === 'request') {
+        const request = s.messages[message.inReplyTo]; request.conversationState = 'unanswered'; request.conversationTerminalAt = at;
+      }
+    } else if (message.state === 'attempted' && message.attemptedAt !== undefined && at >= message.attemptedAt + ATTEMPT_TTL_MS) {
+      message.state = 'terminal-unresolved'; message.terminalAt = at;
+      if (message.kind === 'request') { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; }
+      if (message.kind === 'reply' && message.inReplyTo && s.messages[message.inReplyTo]?.kind === 'request') {
+        const request = s.messages[message.inReplyTo]; request.conversationState = 'unanswered'; request.conversationTerminalAt = at;
+      }
+    } else if (message.kind === 'request' && message.conversationState === 'awaiting-reply') {
+      const route = s.routes[routeKey(message.recipientPeerId, message.senderPeerId)];
+      if (route?.expiresAt !== undefined && at >= route.expiresAt) { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; route.mode = 'closed'; delete route.requestMessageId; delete route.observedAt; delete route.expiresAt; }
+    }
+  }
+  for (const peer of Object.values(s.peers).sort((a, b) => a.id.localeCompare(b.id))) {
+    if (!peer.active) continue;
+    const expiresAt = peer.suspended ? (peer.suspendedAt ?? peer.lastSeen) + MEMBER_TTL_MS : peer.lastSeen + MEMBER_TTL_MS;
+    if (at >= expiresAt) finalizePeer(s, peer, 'expired', at);
+  }
+}
 export function resolveMessage(s: Ledger, ref: GroupRef, id: string, state: 'canceled' | 'dismissed'): void {
   groupOf(s, ref); const m = Object.hasOwn(s.messages, id) ? s.messages[id] : undefined;
   if (!m || m.groupId !== ref.id || (state === 'canceled' ? m.state !== 'queued' : state !== 'dismissed' || m.state !== 'attempted')) fail('validation', 'Message is not eligible for that recovery action');

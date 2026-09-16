@@ -60,6 +60,20 @@ test('only the addressed recipient can consume an observed request with one repl
   assert.throws(() => p.prepareMessage(f.state, lease(f.b), { kind: 'reply', toPeerId: f.a.id, text: 'again', inReplyTo: request.id }, 'duplicate', 3_001), /reply|capability|route/i);
 });
 
+test('maintenance expires queued and attempted work without refunding spent admission', () => {
+  const f = fixture(); p.arm(f.state, f.group, 2);
+  const queued = p.prepareMessage(f.state, lease(f.a), { kind: 'notice', toPeerId: f.b.id, text: 'queued' }, 'queued', 1_000);
+  p.maintain(f.state, 1_000 + p.QUEUED_TTL_MS);
+  assert.equal(f.state.messages[queued.id].state, 'expired');
+  assert.equal(f.state.groups[f.group.id].used, 0);
+  f.state.routes[p.routeKey(f.a.id, f.b.id)].mode = 'open';
+  const attempted = p.prepareMessage(f.state, lease(f.a), { kind: 'notice', toPeerId: f.b.id, text: 'attempted' }, 'attempted', 10_000);
+  p.admit(f.state, lease(f.b), attempted.id, 11_000);
+  p.maintain(f.state, 11_000 + p.ATTEMPT_TTL_MS);
+  assert.equal(f.state.messages[attempted.id].state, 'terminal-unresolved');
+  assert.equal(f.state.groups[f.group.id].used, 1);
+});
+
 test('joining cannot grant queue capacity; admissions consume a shared non-refilling budget', () => {
   const f = fixture();
   assert.throws(() => send(f), /allowance|capacity/i);
