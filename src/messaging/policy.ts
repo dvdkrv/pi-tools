@@ -8,9 +8,17 @@ interface LegacyLedgerV2 { version: 2; authorityId: string; sequence: number; gr
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const control = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
 export const ONLINE_WINDOW_MS = 30_000;
+export const REPLY_TTL_MS = 60 * 60 * 1000;
 export const MAX_QUEUED_PER_RECIPIENT = 8;
 const unresolved = (message: MessageStatus) => message.state === 'queued' || message.state === 'attempted';
 const queuedInGroup = (state: Ledger, groupId: string) => Object.values(state.messages).filter(message => message.groupId === groupId && message.state === 'queued');
+export function reservedSlots(state: Ledger, groupId: string): number {
+  return Object.values(state.messages).filter(message => message.groupId === groupId).reduce((total, message) => {
+    if (message.state === 'queued') return total + 1 + (message.kind === 'request' && message.conversationState === 'pending-delivery' ? 1 : 0);
+    if (message.kind === 'request' && ['pending-delivery', 'awaiting-reply'].includes(message.conversationState ?? '')) return total + 1;
+    return total;
+  }, 0);
+}
 export function fail(code: string, message: string): never { throw new MessagingError(code, message); }
 export function safeText(text: string): string { return text.replace(control, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`); }
 export function validateDisplayName(value: string): string {
@@ -20,8 +28,10 @@ export function validateDisplayName(value: string): string {
 export function validateInput(input: SendInput): SendInput {
   if (typeof input.text !== 'string' || !input.text.trim() || Buffer.byteLength(input.text, 'utf8') > 8192) fail('validation', 'Message body must be nonempty and at most 8 KiB UTF-8');
   if (!uuid.test(input.toPeerId)) fail('validation', 'Invalid toPeerId: use the full routing id returned by peers');
+  if (input.kind !== undefined && !['notice', 'request', 'reply'].includes(input.kind)) fail('validation', 'Invalid message kind');
   if (input.inReplyTo !== undefined && !uuid.test(input.inReplyTo)) fail('validation', 'Invalid inReplyTo: use a message id, or omit it for a new message');
-  return { toPeerId: input.toPeerId, text: input.text, ...(input.inReplyTo ? { inReplyTo: input.inReplyTo } : {}) };
+  if (input.kind === 'reply' ? input.inReplyTo === undefined : input.kind !== undefined && input.inReplyTo !== undefined) fail('validation', 'Only replies require inReplyTo');
+  return { ...(input.kind ? { kind: input.kind } : {}), toPeerId: input.toPeerId, text: input.text, ...(input.inReplyTo ? { inReplyTo: input.inReplyTo } : {}) };
 }
 export function payloadHash(input: SendInput): string { return createHash('sha256').update(JSON.stringify(validateInput(input))).digest('hex'); }
 export function routeKey(fromPeerId: string, toPeerId: string): string { return `${fromPeerId}:${toPeerId}`; }
@@ -188,35 +198,52 @@ export function heartbeat(s: Ledger, lease: ParticipantLease, displayName?: stri
 export function arm(s: Ledger, ref: GroupRef, limit: number): void {
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) fail('validation', 'Allowance must be an integer from 1 to 100');
   const g = groupOf(s, ref);
-  const queued = queuedInGroup(s, g.id).length;
-  if (limit < queued) fail('allowance', `Allowance must cover ${queued} already queued message${queued === 1 ? '' : 's'}`);
+  const queued = reservedSlots(s, g.id);
+  if (limit < queued) fail('allowance', `Allowance must cover ${queued} already reserved admission${queued === 1 ? '' : 's'}`);
   g.round++; g.limit = limit; g.used = 0; g.mode = 'armed';
 }
 export function pause(s: Ledger, ref: GroupRef): void { groupOf(s, ref).mode = 'paused'; }
-export function prepareMessage(s: Ledger, senderLease: ParticipantLease, input: SendInput, requestKey: string): MessageStatus {
-  const sender = authorizeLease(s, senderLease); validateInput(input);
+export function prepareMessage(s: Ledger, senderLease: ParticipantLease, input: SendInput, requestKey: string, now = Date.now()): MessageStatus {
+  const sender = authorizeLease(s, senderLease); const normalized = validateInput(input); const createdAt = lifecycleTime(now);
   if (!requestKey || requestKey.length > 512) fail('validation', 'Invalid request key');
-  const hash = payloadHash(input);
+  const hash = payloadHash(normalized);
   const existing = Object.values(s.messages).find(m => m.senderPeerId === sender.id && m.requestKey === requestKey);
   if (existing) { if (existing.hash !== hash) fail('conflict', 'Send idempotency conflict'); return existing; }
   const recipient = activePeer(s, input.toPeerId);
   if (sender.id === recipient.id || sender.groupId !== recipient.groupId) fail('validation', 'Recipient must be another peer in the same group');
-  if (input.inReplyTo && (!Object.hasOwn(s.messages, input.inReplyTo) || s.messages[input.inReplyTo].groupId !== sender.groupId)) fail('validation', 'Reply reference is not in this group');
+  if (normalized.inReplyTo && (!Object.hasOwn(s.messages, normalized.inReplyTo) || s.messages[normalized.inReplyTo].groupId !== sender.groupId)) fail('validation', 'Reply reference is not in this group');
+  const route = s.routes[routeKey(sender.id, recipient.id)];
+  let repliedRequest: MessageStatus | undefined;
+  if (normalized.kind === 'reply') {
+    repliedRequest = normalized.inReplyTo ? s.messages[normalized.inReplyTo] : undefined;
+    if (!repliedRequest || repliedRequest.kind !== 'request' || repliedRequest.senderPeerId !== recipient.id || repliedRequest.recipientPeerId !== sender.id || repliedRequest.conversationState !== 'awaiting-reply' || !route || route.mode !== 'reply-only' || route.requestMessageId !== repliedRequest.id || route.expiresAt === undefined || createdAt >= route.expiresAt) fail('reply', 'Reply capability is unavailable or expired');
+  } else if (normalized.kind && (!route || route.mode !== 'open')) fail('route', 'Messaging route is closed');
+  if (['notice', 'request'].includes(normalized.kind ?? '') && Object.values(s.messages).some(message => message.senderPeerId === recipient.id && message.recipientPeerId === sender.id && unresolved(message))) fail('route', 'Reverse traffic is already pending');
+  if (normalized.kind === 'request' && Object.values(s.messages).some(message => message.kind === 'request' && [sender.id, recipient.id].includes(message.senderPeerId) && [sender.id, recipient.id].includes(message.recipientPeerId) && ['pending-delivery', 'awaiting-reply', 'reply-pending'].includes(message.conversationState ?? ''))) fail('route', 'Another conversation is already open');
   if (Object.values(s.messages).some(message => message.senderPeerId === sender.id && unresolved(message))) fail('busy', 'Sender already has an unresolved outbound message');
   const group = s.groups[sender.groupId];
   const queued = queuedInGroup(s, group.id);
   if (queued.filter(message => message.recipientPeerId === recipient.id).length >= MAX_QUEUED_PER_RECIPIENT) fail('full', 'Recipient already has eight queued messages');
-  if (group.limit - group.used - queued.length <= 0) fail('allowance', 'No unspent messaging allowance remains for another queued message');
+  const required = normalized.kind === 'request' ? 2 : normalized.kind === 'reply' ? 0 : 1;
+  if (group.limit - group.used - reservedSlots(s, group.id) < required) fail('allowance', 'No unspent messaging allowance remains for this message');
   if (Object.keys(s.messages).length >= 2000 || Object.values(s.messages).filter(m => m.groupId === sender.groupId && ['queued', 'attempted'].includes(m.state)).length >= 64) fail('full', 'Message queue/store full; cancel, dismiss, or prune from the human inbox');
   if (s.sequence >= Number.MAX_SAFE_INTEGER) fail('full', 'Sequence exhausted');
-  const m: MessageStatus = { id: randomUUID(), sequence: ++s.sequence, groupId: sender.groupId, senderPeerId: sender.id, recipientPeerId: recipient.id, senderName: sender.displayName, requestKey, hash, createdAt: Date.now(), kind: 'legacy', state: 'queued', ...(input.inReplyTo ? { inReplyTo: input.inReplyTo } : {}) };
+  const kind = normalized.kind ?? 'legacy';
+  const m: MessageStatus = { id: randomUUID(), sequence: ++s.sequence, groupId: sender.groupId, senderPeerId: sender.id, recipientPeerId: recipient.id, senderName: sender.displayName, requestKey, hash, createdAt, kind, state: 'queued', ...(kind === 'request' ? { conversationState: 'pending-delivery' as const } : {}), ...(normalized.inReplyTo ? { inReplyTo: normalized.inReplyTo } : {}) };
+  if (kind === 'notice') s.routes[routeKey(recipient.id, sender.id)].mode = 'closed';
+  if (kind === 'request') s.routes[routeKey(recipient.id, sender.id)] = { groupId: sender.groupId, fromPeerId: recipient.id, toPeerId: sender.id, mode: 'reply-only', requestMessageId: m.id };
+  if (kind === 'reply' && repliedRequest) {
+    repliedRequest.conversationState = 'reply-pending'; repliedRequest.replyMessageId = m.id;
+    s.routes[routeKey(sender.id, recipient.id)] = { groupId: sender.groupId, fromPeerId: sender.id, toPeerId: recipient.id, mode: 'closed' };
+    s.routes[routeKey(recipient.id, sender.id)] = { groupId: sender.groupId, fromPeerId: recipient.id, toPeerId: sender.id, mode: 'closed' };
+  }
   s.messages[m.id] = m; return m;
 }
 export function canReceive(s: Ledger, recipientLease: ParticipantLease): boolean {
   const peer = authorizeLease(s, recipientLease); const group = s.groups[peer.groupId];
   return group.mode === 'armed' && group.used < group.limit && !Object.values(s.messages).some(m => m.recipientPeerId === peer.id && m.state === 'attempted');
 }
-export function admitBatch(s: Ledger, recipientLease: ParticipantLease, messageIds: readonly string[]): Reservation[] {
+export function admitBatch(s: Ledger, recipientLease: ParticipantLease, messageIds: readonly string[], now = Date.now()): Reservation[] {
   const peer = authorizeLease(s, recipientLease);
   if (messageIds.length === 0) return [];
   if (messageIds.length > MAX_QUEUED_PER_RECIPIENT || new Set(messageIds).size !== messageIds.length) fail('validation', 'Invalid messaging batch');
@@ -229,15 +256,15 @@ export function admitBatch(s: Ledger, recipientLease: ParticipantLease, messageI
     if (message.recipientPeerId !== peer.id || message.groupId !== group.id) fail('corrupt', 'Batch candidate belongs to another inbox');
     if (selected.length < group.limit - group.used) selected.push(message);
   }
-  const now = Date.now();
+  const attemptedAt = lifecycleTime(now);
   return selected.map(message => {
-    message.state = 'attempted'; message.attemptId = randomUUID(); message.attemptRound = group.round; message.attemptedAt = now;
+    message.state = 'attempted'; message.attemptId = randomUUID(); message.attemptRound = group.round; message.attemptedAt = attemptedAt;
     if (++group.used === group.limit) group.mode = 'exhausted';
     return { group: refOf(group), peerId: peer.id, message: { ...message }, attemptId: message.attemptId, round: group.round };
   });
 }
-export function admit(s: Ledger, recipientLease: ParticipantLease, messageId: string): Reservation | null { return admitBatch(s, recipientLease, [messageId])[0] ?? null; }
-export function observeBatch(s: Ledger, recipientLease: ParticipantLease, reservations: readonly Reservation[]): void {
+export function admit(s: Ledger, recipientLease: ParticipantLease, messageId: string, now = Date.now()): Reservation | null { return admitBatch(s, recipientLease, [messageId], now)[0] ?? null; }
+export function observeBatch(s: Ledger, recipientLease: ParticipantLease, reservations: readonly Reservation[], now = Date.now()): void {
   const peer = authorizeLease(s, recipientLease);
   if (!reservations) fail('participation', 'A current peer lease is required');
   if (reservations.length === 0 || reservations.length > MAX_QUEUED_PER_RECIPIENT) fail('receipt', 'Invalid receipt batch');
@@ -252,13 +279,24 @@ export function observeBatch(s: Ledger, recipientLease: ParticipantLease, reserv
     if (!message || message.groupId !== reservation.group.id || message.recipientPeerId !== reservation.peerId || message.attemptId !== reservation.attemptId || message.attemptRound !== reservation.round || !['attempted', 'observed', 'dismissed'].includes(message.state)) fail('receipt', 'Invalid receipt correlation');
     return message;
   });
-  const now = Date.now();
+  const observedAt = lifecycleTime(now);
   for (const message of messages) {
-    message.observedAt ??= now;
-    if (message.state === 'attempted') { message.state = 'observed'; message.terminalAt = now; }
+    message.observedAt ??= observedAt;
+    if (message.state === 'attempted') { message.state = 'observed'; message.terminalAt = observedAt; }
+    if (message.kind === 'request' && message.conversationState === 'pending-delivery') {
+      message.conversationState = 'awaiting-reply';
+      const route = s.routes[routeKey(message.recipientPeerId, message.senderPeerId)];
+      if (!route || route.mode !== 'reply-only' || route.requestMessageId !== message.id) fail('corrupt', 'Request reply route is inconsistent');
+      route.observedAt = observedAt; route.expiresAt = observedAt + REPLY_TTL_MS;
+    }
+    if (message.kind === 'reply' && message.inReplyTo) {
+      const request = s.messages[message.inReplyTo];
+      if (!request || request.kind !== 'request' || request.replyMessageId !== message.id) fail('corrupt', 'Reply request is inconsistent');
+      request.conversationState = 'answered'; request.conversationTerminalAt = observedAt;
+    }
   }
 }
-export function observe(s: Ledger, recipientLease: ParticipantLease, reservation: Reservation): void { observeBatch(s, recipientLease, [reservation]); }
+export function observe(s: Ledger, recipientLease: ParticipantLease, reservation: Reservation, now = Date.now()): void { observeBatch(s, recipientLease, [reservation], now); }
 export function resolveMessage(s: Ledger, ref: GroupRef, id: string, state: 'canceled' | 'dismissed'): void {
   groupOf(s, ref); const m = Object.hasOwn(s.messages, id) ? s.messages[id] : undefined;
   if (!m || m.groupId !== ref.id || (state === 'canceled' ? m.state !== 'queued' : state !== 'dismissed' || m.state !== 'attempted')) fail('validation', 'Message is not eligible for that recovery action');

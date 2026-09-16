@@ -21,7 +21,7 @@ export interface Envelope {
   createdAt: number; text: string; inReplyTo?: string;
 }
 export interface Reservation { group: GroupRef; peerId: string; message: MessageStatus; attemptId: string; round: number; envelope?: Envelope }
-export interface SendInput { toPeerId: string; text: string; inReplyTo?: string }
+export interface SendInput { kind?: Exclude<MessageKind, 'legacy'>; toPeerId: string; text: string; inReplyTo?: string }
 export interface GroupSummary {
   group: GroupRef; mode: Group['mode']; roundNumber: number; limit: number; used: number; remaining: number;
   onlinePeers: number; pendingCount: number;

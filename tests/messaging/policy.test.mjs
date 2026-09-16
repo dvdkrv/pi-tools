@@ -24,6 +24,42 @@ function sendFrom(f, sender, key = randomUUID(), text = 'hello') {
   return p.prepareMessage(f.state, lease(sender), { toPeerId: f.b.id, text }, key);
 }
 
+test('a notice atomically closes the reverse route and rejects a disguised notice response', () => {
+  const f = fixture(); p.arm(f.state, f.group, 2);
+  const notice = p.prepareMessage(f.state, lease(f.a), { kind: 'notice', toPeerId: f.b.id, text: 'no reply' }, 'notice');
+  assert.equal(notice.kind, 'notice');
+  assert.equal(f.state.routes[p.routeKey(f.b.id, f.a.id)].mode, 'closed');
+  const before = structuredClone(f.state);
+  assert.throws(() => p.prepareMessage(f.state, lease(f.b), { kind: 'notice', toPeerId: f.a.id, text: 'disguised response' }, 'response'), /route|closed/i);
+  assert.deepEqual(f.state, before);
+});
+
+test('a request atomically reserves delivery and one exact reply capability', () => {
+  const f = fixture(); p.arm(f.state, f.group, 2);
+  const request = p.prepareMessage(f.state, lease(f.a), { kind: 'request', toPeerId: f.b.id, text: 'review' }, 'request');
+  assert.equal(request.conversationState, 'pending-delivery');
+  assert.equal(p.reservedSlots(f.state, f.group.id), 2);
+  assert.deepEqual(f.state.routes[p.routeKey(f.b.id, f.a.id)], {
+    groupId: f.group.id, fromPeerId: f.b.id, toPeerId: f.a.id, mode: 'reply-only', requestMessageId: request.id,
+  });
+  assert.throws(() => p.prepareMessage(f.state, lease(addPeer(f, 'c')), { kind: 'notice', toPeerId: f.b.id, text: 'no capacity' }, 'full'), /allowance|capacity/i);
+});
+
+test('only the addressed recipient can consume an observed request with one reply', () => {
+  const f = fixture(); p.arm(f.state, f.group, 2);
+  const request = p.prepareMessage(f.state, lease(f.a), { kind: 'request', toPeerId: f.b.id, text: 'review' }, 'request');
+  const reservation = p.admit(f.state, lease(f.b), request.id, 1_000);
+  p.observe(f.state, lease(f.b), reservation, 2_000);
+  assert.equal(f.state.messages[request.id].conversationState, 'awaiting-reply');
+  const reply = p.prepareMessage(f.state, lease(f.b), { kind: 'reply', toPeerId: f.a.id, text: 'done', inReplyTo: request.id }, 'reply', 3_000);
+  assert.equal(reply.kind, 'reply');
+  assert.equal(f.state.messages[request.id].conversationState, 'reply-pending');
+  assert.equal(p.reservedSlots(f.state, f.group.id), 1);
+  assert.equal(f.state.routes[p.routeKey(f.a.id, f.b.id)].mode, 'closed');
+  assert.equal(f.state.routes[p.routeKey(f.b.id, f.a.id)].mode, 'closed');
+  assert.throws(() => p.prepareMessage(f.state, lease(f.b), { kind: 'reply', toPeerId: f.a.id, text: 'again', inReplyTo: request.id }, 'duplicate', 3_001), /reply|capability|route/i);
+});
+
 test('joining cannot grant queue capacity; admissions consume a shared non-refilling budget', () => {
   const f = fixture();
   assert.throws(() => send(f), /allowance|capacity/i);
