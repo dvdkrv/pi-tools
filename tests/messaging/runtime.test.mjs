@@ -40,6 +40,18 @@ test('idle readiness hands off one batch-shaped custom message and one receipt o
   await f.runtime.stop();
 });
 
+test('request delivery uses stationary protocol fields and a bounded reply directive', async () => {
+  const f = fixture();
+  f.reservations[0].message.kind = 'request';
+  f.reservations[0].envelope.version = 2;
+  f.reservations[0].envelope.kind = 'request';
+  await f.runtime.wake();
+  const content = f.calls[0][0].content;
+  assert.match(content, /kind.*request/i);
+  assert.match(content, /reply.*exactly one/i);
+  assert.match(content, /one hour.*observation/i);
+});
+
 test('three reservations are escaped and delivered together in publication order', async () => {
   const f = fixture(3); await f.runtime.wake();
   assert.equal(f.calls.length, 1); const [message] = f.calls[0];

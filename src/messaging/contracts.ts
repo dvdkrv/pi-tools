@@ -42,6 +42,8 @@ export interface MessagingBackend extends MessagingReader {
   pause(ref: GroupRef): Promise<void>;
   maintain(ref: GroupRef, now?: number): Promise<void>;
   peers(ref: GroupRef): Promise<Peer[]>;
+  routes(ref: GroupRef): Promise<Route[]>;
+  setRoute(ref: GroupRef, fromPeerId: string, toPeerId: string, mode: 'open' | 'closed', recoverReplyOnly?: boolean): Promise<void>;
   send(input: SendInput, requestKey: string): Promise<MessageStatus>;
   reserve(): Promise<Reservation[]>;
   observe(reservations: readonly Reservation[]): Promise<void>;

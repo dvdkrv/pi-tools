@@ -60,6 +60,16 @@ test('only the addressed recipient can consume an observed request with one repl
   assert.throws(() => p.prepareMessage(f.state, lease(f.b), { kind: 'reply', toPeerId: f.a.id, text: 'again', inReplyTo: request.id }, 'duplicate', 3_001), /reply|capability|route/i);
 });
 
+test('only confirmed human recovery can replace a reply-only route', () => {
+  const f = fixture(); p.arm(f.state, f.group, 2);
+  const request = p.prepareMessage(f.state, lease(f.a), { kind: 'request', toPeerId: f.b.id, text: 'review' }, 'request');
+  assert.throws(() => p.setRoute(f.state, f.group, f.b.id, f.a.id, 'open', false, 2_000), /reply|recover|conversation/i);
+  p.setRoute(f.state, f.group, f.b.id, f.a.id, 'open', true, 2_000);
+  assert.equal(f.state.routes[p.routeKey(f.b.id, f.a.id)].mode, 'open');
+  assert.equal(f.state.messages[request.id].conversationState, 'unanswered');
+  assert.equal(f.state.messages[request.id].conversationTerminalAt, 2_000);
+});
+
 test('maintenance expires queued and attempted work without refunding spent admission', () => {
   const f = fixture(); p.arm(f.state, f.group, 2);
   const queued = p.prepareMessage(f.state, lease(f.a), { kind: 'notice', toPeerId: f.b.id, text: 'queued' }, 'queued', 1_000);
@@ -268,7 +278,7 @@ test('lease rotation fences every old participant mutation after suspended recip
   const beforeAdmission = structuredClone(f.state);
   assert.throws(() => p.admitBatch(f.state, oldLease, [first.id, second.id, third.id]), /participation|lease/i);
   assert.deepEqual(f.state, beforeAdmission, 'old-lease admission must spend no credit and mutate no message');
-  const batch = p.admitBatch(f.state, resumedLease, [second.id, first.id, third.id]);
+  const batch = p.admitBatch(f.state, resumedLease, [second.id, first.id, third.id], 100_002);
   assert.deepEqual(batch.map(item => item.message.id), [second.id, first.id, third.id]);
   assert.equal(f.state.groups[f.group.id].used, 3);
 

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
-import type { GroupRef, MessagingBackend } from './contracts.ts';
+import type { GroupRef, MessagingBackend, Peer } from './contracts.ts';
 import { fail, peerPresence, safeText } from './policy.ts';
 import { peerLabel } from './identity.ts';
 
@@ -15,7 +15,7 @@ export interface HumanControls {
 }
 export async function handleMessages(args: string, ctx: ExtensionCommandContext, controls: HumanControls): Promise<void> {
   const [command = 'status', argument, ...extra] = args.trim().split(/\s+/).filter(Boolean);
-  if (extra.length || (argument && !['join', 'arm'].includes(command))) fail('validation', 'Usage: /messages status|join [group]|leave|arm [1–100]|pause|send|inbox|prune|revoke');
+  if (extra.length || (argument && !['join', 'arm'].includes(command))) fail('validation', 'Usage: /messages status|join [group]|leave|arm [1–100]|pause|send|routes|inbox|prune|revoke');
   const b = controls.backend;
   const ask = async <T>(value: Promise<T>): Promise<T> => { const result = await value; controls.guard(); return result; };
   async function selectGroup(create = false): Promise<GroupRef | undefined> {
@@ -42,9 +42,12 @@ export async function handleMessages(args: string, ctx: ExtensionCommandContext,
     const labels = peers.map((p, i) => { const presence = peerPresence(p); return `${i + 1}. ${peerLabel(p)}${presence === 'online' ? '' : ` (${presence})`}`; });
     const choice = await ask(ctx.ui.select('Send to peer', labels));
     if (!choice) return;
+    const kindChoice = await ask(ctx.ui.select('Message kind', ['Notice — replies forbidden', 'Request — exactly one reply']));
+    if (!kindChoice) return;
+    const kind = kindChoice.startsWith('Notice') ? 'notice' : 'request';
     const text = await ask(ctx.ui.editor('Peer message (submit to queue; Escape cancels)', initial));
     if (text === undefined || !text.trim()) return;
-    const sent = await b.send({ toPeerId: peers[labels.indexOf(choice)].id, text }, randomUUID());
+    const sent = await b.send({ kind, toPeerId: peers[labels.indexOf(choice)].id, text }, randomUUID());
     ctx.ui.notify(`Queued ${sent.id}; this is not a delivery receipt.`, 'info');
   }
   if (command === 'leave') { await controls.leave(); controls.guard(); ctx.ui.notify('Left messaging. Already admitted messages cannot be recalled.', 'info'); return; }
@@ -59,32 +62,36 @@ export async function handleMessages(args: string, ctx: ExtensionCommandContext,
       fail('participation', 'Leave the current group first');
     }
     const summary = await b.getGroupSummary(group); if (!summary) fail('missing', 'Group no longer exists');
-    const sameSession = (await b.peers(group)).filter(peer => peer.sessionId === sessionId);
+    const members = (await b.peers(group)).filter(peer => peer.active);
+    const sameSession = members.filter(peer => peer.sessionId === sessionId);
     const online = sameSession.find(peer => peerPresence(peer) === 'online');
     if (online) fail('participation', `This Pi session already has an online messaging peer (${peerLabel(online)}). Return to it or explicitly revoke it before resuming elsewhere.`);
-    const candidates = sameSession.filter(peer => ['stale', 'suspended'].includes(peerPresence(peer)));
+    const candidates = members.filter(peer => ['stale', 'suspended'].includes(peerPresence(peer)));
     const unresolved = new Map<string, number>();
     if (candidates.length) {
       for (const message of await b.listMessages(group)) {
         if (message.state === 'queued' || message.state === 'attempted') unresolved.set(message.recipientPeerId, (unresolved.get(message.recipientPeerId) ?? 0) + 1);
       }
     }
-    let candidate = candidates[0];
-    if (candidates.length > 1) {
+    let candidate: Peer | undefined = candidates[0];
+    if (candidates.length > 1 || candidates.some(peer => peer.sessionId !== sessionId)) {
       const labels = candidates.map((peer, index) => {
         const presence = peerPresence(peer); const age = Math.max(0, Math.round((Date.now() - peer.lastSeen) / 1000));
         return `${index + 1}. ${peerLabel(peer)} — ${presence}, ${age}s since heartbeat, ${unresolved.get(peer.id) ?? 0} unresolved`;
       });
-      const choice = await ask(ctx.ui.select('Resume messaging participation', labels));
+      const createLabel = '+ Create new participation';
+      const choice = await ask(ctx.ui.select('Resume messaging participation', [...labels, createLabel]));
       if (!choice) return;
-      const index = labels.indexOf(choice); if (index < 0) fail('validation', 'Invalid resume selection');
-      candidate = candidates[index];
+      if (choice === createLabel) candidate = undefined;
+      else { const index = labels.indexOf(choice); if (index < 0) fail('validation', 'Invalid resume selection'); candidate = candidates[index]; }
     }
     if (candidate) {
-      const presence = peerPresence(candidate); const count = unresolved.get(candidate.id) ?? 0;
-      if (!await ask(ctx.ui.confirm('Resume messaging participation?', `${group.label}: preserve ${peerLabel(candidate)}, its routing ID and inbox (${presence}; ${count} unresolved). Resume grants no allowance.`))) return;
-      const resumed = await b.resume(group, candidate.id, sessionId);
-      controls.joined(group); ctx.ui.notify(`Resumed ${group.label} as ${peerLabel(resumed)}. Existing routing and inbox were preserved.`, 'info'); return;
+      const presence = peerPresence(candidate); const count = unresolved.get(candidate.id) ?? 0; const takeover = candidate.sessionId !== sessionId;
+      const title = takeover ? 'Take over messaging participation?' : 'Resume messaging participation?';
+      const detail = `${group.label}: preserve ${peerLabel(candidate)}, its routing ID and inbox (${presence}; ${count} unresolved). ${takeover ? 'The old session lease will be fenced. Takeover' : 'Resume'} grants no allowance.`;
+      if (!await ask(ctx.ui.confirm(title, detail))) return;
+      const attached = takeover ? await b.takeover(group, candidate.id, sessionId) : await b.resume(group, candidate.id, sessionId);
+      controls.joined(group); ctx.ui.notify(`${takeover ? 'Took over' : 'Resumed'} ${group.label} as ${peerLabel(attached)}. Existing routing and inbox were preserved.`, 'info'); return;
     }
     if (!await ask(ctx.ui.confirm('Join messaging group?', `${group.label}: ${summary.mode}, ${summary.remaining} admissions remaining. Default name: ${safeText(sessionId)}; the agent can choose its role name during normal work. When armed, peers may wake this session when idle; incoming messages wait for busy work to finish. Joining does not grant allowance.`))) return;
     await b.join(group, { sessionId, displayName: sessionId });
@@ -99,6 +106,23 @@ export async function handleMessages(args: string, ctx: ExtensionCommandContext,
     await b.pause(group); ctx.ui.notify('Paused new admissions. Already admitted Pi messages may still appear.', 'info');
   } else if (command === 'send') {
     await compose(group);
+  } else if (command === 'routes') {
+    const peers = await b.peers(group); const names = new Map(peers.map(peer => [peer.id, peerLabel(peer)]));
+    const routes = await b.routes(group);
+    const labels = routes.map((route, index) => `${index + 1}. ${names.get(route.fromPeerId) ?? route.fromPeerId.slice(0, 8)} → ${names.get(route.toPeerId) ?? route.toPeerId.slice(0, 8)}: ${route.mode}`);
+    const choice = await ask(ctx.ui.select('Messaging route', [...labels, 'Close']));
+    if (!choice || choice === 'Close') return;
+    const route = routes[labels.indexOf(choice)]; if (!route) fail('validation', 'Invalid route selection');
+    const action = await ask(ctx.ui.select('Route action', ['Open direction', 'Close direction', 'Cancel']));
+    if (!action || action === 'Cancel') return;
+    const mode = action.startsWith('Open') ? 'open' : 'closed';
+    let recover = false;
+    if (route.mode === 'reply-only') {
+      recover = await ask(ctx.ui.confirm('Recover and replace reply-only route?', 'Marks the open request unanswered and releases only its unused reply reservation. Spent credits are not refunded.'));
+      if (!recover) return;
+    } else if (!await ask(ctx.ui.confirm(`${mode === 'open' ? 'Open' : 'Close'} this messaging direction?`, 'This changes initiation permission only and grants no allowance.'))) return;
+    await b.setRoute(group, route.fromPeerId, route.toPeerId, mode, recover);
+    ctx.ui.notify(`Route ${mode}. No allowance was granted.`, 'info');
   } else if (command === 'inbox') {
     let offset = 0;
     while (true) {
@@ -133,7 +157,7 @@ export async function handleMessages(args: string, ctx: ExtensionCommandContext,
     if (choice && await ask(ctx.ui.confirm('Revoke this peer?', 'Stops future admissions; does not kill a process or recall prior messages.'))) await b.revoke(group, peers[labels.indexOf(choice)].id);
   } else if (command === 'status') {
     const summary = await b.getGroupSummary(group);
-    const peers = await b.peers(group);
+    const peers = (await b.peers(group)).filter(peer => peer.active);
     ctx.ui.notify(safeText(`${group.label}: ${summary?.mode ?? 'missing'}, ${summary?.remaining ?? 0} admissions remaining; ${summary?.pendingCount ?? 0} pending/uncertain.\n${peers.map((p, i) => `${i + 1}. ${peerLabel(p)}: ${peerPresence(p)}`).join('\n')}`), 'info');
-  } else fail('validation', 'Unknown /messages command. Use status, join, leave, arm, pause, send, inbox, prune, or revoke.');
+  } else fail('validation', 'Unknown /messages command. Use status, join, leave, arm, pause, send, routes, inbox, prune, or revoke.');
 }

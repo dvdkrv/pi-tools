@@ -73,9 +73,14 @@ export class MessagingRuntime {
         messages: batch.map(reservation => ({ messageId: reservation.message.id, attemptId: reservation.attemptId, round: reservation.round })) };
       const blocks = batch.map((reservation, index) => {
         const envelope = reservation.envelope!;
-        const metadata = { group: this.group.label, sender: envelope.senderName, senderPeerId: envelope.senderPeerId,
+        const kind = envelope.kind ?? 'legacy';
+        const metadata = { kind, group: this.group.label, sender: envelope.senderName, senderPeerId: envelope.senderPeerId,
           recipientPeerId: this.peerId, messageId: reservation.message.id, createdAt: envelope.createdAt, inReplyTo: envelope.inReplyTo };
-        return `Message ${index + 1} of ${batch.length}\n${safeText(JSON.stringify(metadata))}\nPeer content (JSON string):\n${safeText(JSON.stringify(envelope.text))}`;
+        const directive = kind === 'notice' ? 'Reply forbidden; the reverse route is closed.'
+          : kind === 'request' ? `Reply exactly one time using inReplyTo ${reservation.message.id}; the one hour window begins when delivery observation commits.`
+          : kind === 'reply' ? 'Reply forbidden; acknowledgements are not allowed.'
+          : 'Legacy message; do not reply automatically.';
+        return `Message ${index + 1} of ${batch.length}\n${safeText(JSON.stringify(metadata))}\nReply directive: ${safeText(directive)}\nPeer content (JSON string):\n${safeText(JSON.stringify(envelope.text))}`;
       });
       // If work began during the asynchronous reservation, Pi queues this already-admitted
       // batch after that work instead of steering between tool steps. Never replay/refund.

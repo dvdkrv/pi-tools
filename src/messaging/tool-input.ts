@@ -5,6 +5,7 @@ import { fail } from './policy.ts';
 export const peerMessageParameters = Type.Object({
   action: StringEnum(['peers', 'status', 'send', 'rename'] as const),
   displayName: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: 'rename only: concise name describing your existing assigned role; omit for other actions' })),
+  kind: Type.Optional(StringEnum(['notice', 'request', 'reply'] as const, { description: 'send only: required message protocol kind' })),
   toPeerId: Type.Optional(Type.String({ description: 'send only: full peers[].id routing ID, not sessionId or displayName; omit for other actions' })),
   text: Type.Optional(Type.String({ description: 'send only: nonempty message body, at most 8 KiB UTF-8; omit for other actions' })),
   inReplyTo: Type.Optional(Type.String({ description: 'send only: optional message ID being replied to, not a peer ID; omit or leave empty for a new message' })),
@@ -19,8 +20,8 @@ export function preparePeerMessageArguments(raw: unknown): PeerMessageArguments 
   const args = { ...raw } as Record<string, unknown>;
   if (args.action === 'rename' && typeof args.displayName !== 'string') fail('validation', 'rename requires a string displayName');
   if (args.action === 'send' && (typeof args.toPeerId !== 'string' || typeof args.text !== 'string')) fail('validation', 'send requires string toPeerId and text');
-  for (const key of ['displayName', 'toPeerId', 'text', 'inReplyTo', 'beforeSequence']) {
-    const required = (key === 'displayName' && args.action === 'rename') || (['toPeerId', 'text'].includes(key) && args.action === 'send');
+  for (const key of ['displayName', 'kind', 'toPeerId', 'text', 'inReplyTo', 'beforeSequence']) {
+    const required = (key === 'displayName' && args.action === 'rename') || (['kind', 'toPeerId', 'text'].includes(key) && args.action === 'send');
     if (!required && (args[key] === '' || args[key] === null || args[key] === undefined)) delete args[key];
   }
   // Pagination has no meaning for other actions. Meaningful rename targets/content and

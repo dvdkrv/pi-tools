@@ -2,7 +2,7 @@ import { connect, type NatsConnection, type Subscription } from '@nats-io/transp
 import { AckPolicy, DeliverPolicy, DiscardPolicy, ReplayPolicy, RetentionPolicy, StorageType, JetStreamApiError, jetstream, jetstreamManager, type Consumer, type JetStreamClient, type JetStreamManager } from '@nats-io/jetstream';
 import { Kvm, type KV } from '@nats-io/kv';
 import { setTimeout as delay } from 'node:timers/promises';
-import { MessagingError, type BrokerConfig, type Envelope, type GroupRef, type GroupSummary, type MessagingBackend, type MessageStatus, type ParticipantLease, type Peer, type Reservation, type SendInput } from './contracts.ts';
+import { MessagingError, type BrokerConfig, type Envelope, type GroupRef, type GroupSummary, type MessagingBackend, type MessageStatus, type ParticipantLease, type Peer, type Reservation, type Route, type SendInput } from './contracts.ts';
 import * as policy from './policy.ts';
 
 const STREAM = 'PM_MESSAGES';
@@ -132,6 +132,13 @@ class NatsBackend implements MessagingBackend {
   async peers(ref: GroupRef): Promise<Peer[]> {
     const { state } = await this.snapshot(); policy.groupOf(state, ref);
     return Object.values(state.peers).filter(peer => peer.groupId === ref.id).map(policy.publicPeer);
+  }
+  async routes(ref: GroupRef): Promise<Route[]> {
+    const { state } = await this.snapshot(); policy.groupOf(state, ref);
+    return Object.values(state.routes).filter(route => route.groupId === ref.id).map(route => ({ ...route }));
+  }
+  async setRoute(ref: GroupRef, fromPeerId: string, toPeerId: string, mode: 'open' | 'closed', recoverReplyOnly = false): Promise<void> {
+    await this.change(state => policy.setRoute(state, ref, fromPeerId, toPeerId, mode, recoverReplyOnly));
   }
   private async bindConsumer(peerId: string, groupId: string): Promise<{ consumer: Consumer; created: boolean }> {
     const name = consumerName(peerId);

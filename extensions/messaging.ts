@@ -133,15 +133,19 @@ export function registerMessaging(
         finally { if (renamingPeer === peerId) renamingPeer = undefined; }
         result = { id: peerId, sessionId: self.sessionId, displayName };
       } else if (params.action === 'peers') {
-        result = { selfId: peerId, selfSessionId: self.sessionId, selfDisplayName: self.displayName, peers: (await b.peers(group)).filter(p => p.active).map(p => ({ id: p.id, sessionId: p.sessionId, displayName: p.displayName, presence: peerPresence(p) })) };
+        const routes = await b.routes(group);
+        result = { selfId: peerId, selfSessionId: self.sessionId, selfDisplayName: self.displayName, peers: (await b.peers(group)).filter(p => p.active).map(p => {
+          const route = routes.find(candidate => candidate.fromPeerId === peerId && candidate.toPeerId === p.id);
+          return { id: p.id, sessionId: p.sessionId, displayName: p.displayName, presence: peerPresence(p), sendMode: route?.mode ?? 'closed', ...(route?.mode === 'reply-only' ? { requestMessageId: route.requestMessageId, replyExpiresAt: route.expiresAt } : {}) };
+        }) };
       } else if (params.action === 'status') {
         if (params.beforeSequence !== undefined && (!Number.isSafeInteger(params.beforeSequence) || params.beforeSequence < 1)) fail('validation', 'Invalid beforeSequence');
         const all = (await b.listMessages(group)).filter(m => m.senderPeerId === peerId && m.sequence < (params.beforeSequence ?? Infinity));
         const page = all.slice(0, 20).map(m => ({ id: m.id, sequence: m.sequence, recipientPeerId: m.recipientPeerId, state: m.state, createdAt: m.createdAt, attemptedAt: m.attemptedAt, observedAt: m.observedAt }));
         result = { group: await b.getGroupSummary(group), outgoing: page, nextBeforeSequence: all.length > 20 ? page.at(-1)?.sequence : undefined };
       } else {
-        if (typeof params.toPeerId !== 'string' || typeof params.text !== 'string') fail('validation', 'send requires toPeerId and text');
-        const message = await b.send({ toPeerId: params.toPeerId, text: params.text, ...(params.inReplyTo !== undefined ? { inReplyTo: params.inReplyTo } : {}) }, callId);
+        if (!['notice', 'request', 'reply'].includes(params.kind ?? '') || typeof params.toPeerId !== 'string' || typeof params.text !== 'string') fail('validation', 'send requires kind, toPeerId and text');
+        const message = await b.send({ kind: params.kind as 'notice' | 'request' | 'reply', toPeerId: params.toPeerId, text: params.text, ...(params.inReplyTo !== undefined ? { inReplyTo: params.inReplyTo } : {}) }, callId);
         const summary = await b.getGroupSummary(group); const recipient = (await b.peers(group)).find(p => p.id === params.toPeerId);
         result = { id: message.id, recipientPeerId: message.recipientPeerId, state: message.state, note: 'Accepted by the messaging queue, not proof of task completion. Continue your assigned work; do not wait or poll for replies.', warning: summary?.mode !== 'armed' ? 'Automatic delivery is paused/exhausted.' : recipient && peerPresence(recipient) !== 'online' ? `Recipient is ${peerPresence(recipient)}.` : undefined };
       }

@@ -207,6 +207,18 @@ export function arm(s: Ledger, ref: GroupRef, limit: number): void {
   g.round++; g.limit = limit; g.used = 0; g.mode = 'armed';
 }
 export function pause(s: Ledger, ref: GroupRef): void { groupOf(s, ref).mode = 'paused'; }
+export function setRoute(s: Ledger, ref: GroupRef, fromPeerId: string, toPeerId: string, mode: 'open' | 'closed', recoverReplyOnly = false, now = Date.now()): void {
+  const group = groupOf(s, ref); const from = activePeer(s, fromPeerId); const to = activePeer(s, toPeerId);
+  if (from.id === to.id || from.groupId !== group.id || to.groupId !== group.id) fail('validation', 'Route members must be distinct current group members');
+  const key = routeKey(from.id, to.id); const route = s.routes[key]; if (!route) fail('missing', 'Messaging route does not exist');
+  if (route.mode === 'reply-only') {
+    if (!recoverReplyOnly) fail('recovery', 'Reply-only conversation requires confirmed recovery');
+    const request = route.requestMessageId ? s.messages[route.requestMessageId] : undefined;
+    if (!request || request.kind !== 'request' || !['pending-delivery', 'awaiting-reply'].includes(request.conversationState ?? '')) fail('corrupt', 'Reply-only route is inconsistent');
+    request.conversationState = 'unanswered'; request.conversationTerminalAt = lifecycleTime(now);
+  }
+  s.routes[key] = { groupId: group.id, fromPeerId: from.id, toPeerId: to.id, mode };
+}
 export function prepareMessage(s: Ledger, senderLease: ParticipantLease, input: SendInput, requestKey: string, now = Date.now()): MessageStatus {
   const sender = authorizeLease(s, senderLease); const normalized = validateInput(input); const createdAt = lifecycleTime(now);
   if (!requestKey || requestKey.length > 512) fail('validation', 'Invalid request key');
@@ -244,11 +256,11 @@ export function prepareMessage(s: Ledger, senderLease: ParticipantLease, input: 
   s.messages[m.id] = m; return m;
 }
 export function canReceive(s: Ledger, recipientLease: ParticipantLease, now = Date.now()): boolean {
-  maintain(s, now); const peer = authorizeLease(s, recipientLease); const group = s.groups[peer.groupId];
+  authorizeLease(s, recipientLease); maintain(s, now); const peer = authorizeLease(s, recipientLease); const group = s.groups[peer.groupId];
   return group.mode === 'armed' && group.used < group.limit && !Object.values(s.messages).some(m => m.recipientPeerId === peer.id && m.state === 'attempted');
 }
 export function admitBatch(s: Ledger, recipientLease: ParticipantLease, messageIds: readonly string[], now = Date.now()): Reservation[] {
-  maintain(s, now); const peer = authorizeLease(s, recipientLease);
+  authorizeLease(s, recipientLease); maintain(s, now); const peer = authorizeLease(s, recipientLease);
   if (messageIds.length === 0) return [];
   if (messageIds.length > MAX_QUEUED_PER_RECIPIENT || new Set(messageIds).size !== messageIds.length) fail('validation', 'Invalid messaging batch');
   const group = s.groups[peer.groupId];
