@@ -6,7 +6,7 @@ process.on('message', async value => {
     if (value.action === 'reserve') {
       const batch = await backend.reserve(); process.send(batch.length ? { attemptId: batch[0].attemptId } : {});
     } else if (value.action === 'send') {
-      const message = await backend.send({ toPeerId: value.toPeerId, text: 'one handoff' }, value.key); process.send({ messageId: message.id });
+      const message = await backend.send({ kind: 'notice', toPeerId: value.toPeerId, text: 'one handoff' }, value.key); process.send({ messageId: message.id });
     } else {
       backend = await connectBackend(value.config); const peer = await backend.join(value.g, { sessionId: `child-${value.i}`, displayName: `Child ${value.i}` }); process.send(peer);
     }

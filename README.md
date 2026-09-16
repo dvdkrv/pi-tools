@@ -22,11 +22,13 @@ The worktree, task, and Claude bridge commands can create processes, tmux sessio
 
 ### messaging
 
-`/messages` provides human-controlled setup, joining, resume, status, allowance, inbox, recovery, and final leave/revoke operations. The model-facing `peer_message` tool can discover metadata, rename only itself, inspect bounded status, or queue an addressed message inside an explicitly joined group. It cannot join, arm allowance, or read pending bodies.
+`/messages` provides human-controlled setup, joining, takeover, status, routes, allowance, inbox, recovery, and final leave/revoke operations. The model-facing `peer_message` tool can discover metadata and directional route modes, rename only itself, inspect bounded status, or queue an explicitly typed message inside a joined group. It cannot join, reopen routes, arm allowance, take over identities, or read stored bodies.
 
-Each admitted message consumes one finite shared credit. Queued messages reserve capacity, recipients accept at most eight queued messages, and senders may have only one unresolved outbound. Eligible messages are delivered as one ordered batch at an idle boundary. Attempted or uncertain deliveries are never automatically replayed or refunded.
+Every new message is a `notice`, `request`, or `reply`. A notice atomically closes the recipient-to-sender route, so its recipient cannot answer with a disguised fresh message. A request reserves two credits and grants its exact recipient one reply capability; the reply consumes that capability and closes both directions. Humans alone can reopen a route. Messages use stable member IDs rather than display names or transient session attribution.
 
-Messaging requires NATS Server 2.14.6 in `PATH` (or `NATS_SERVER`) and uses a same-user loopback trust boundary. Participation, allowance, recovery, identity resume, and active-session reload remain explicit human decisions.
+Each admitted message consumes one finite shared credit. Queued delivery expires after one hour, attempted-unconfirmed delivery becomes terminal-unresolved after ten minutes without a refund, and a delivered request's reply capability expires after one hour. Terminal metadata and bodies are retained for seven days before maintenance pruning. Eligible messages are delivered as one ordered batch at an idle boundary; uncertain work is never automatically replayed.
+
+Messaging requires NATS Server 2.14.6 in `PATH` (or `NATS_SERVER`) and uses a same-user loopback trust boundary. Participation, allowance, route recovery, identity takeover, and active-session reload remain explicit human decisions.
 
 ### task
 
@@ -75,15 +77,17 @@ A safe first-time or upgrade flow is:
 3. start a fresh Pi process;
 4. explicitly run `/messages join <group>`;
 5. confirm or select the intended saved identity;
-6. inspect status and explicitly revoke unwanted historical identities.
+6. inspect status and routes; finalized historical identities are hidden from normal member lists.
 
 Never copy broker credentials or data between users or machines.
 
 ## Messaging lifecycle
 
-Reload, shutdown, session replacement, fork, and tree navigation suspend participation by default. Explicit `/messages leave` and human revoke are final. Resume rotates a private lifecycle lease that fences stale processes while retaining routing identity, role, durable inbox, queue state, and finite allowance.
+Reload, shutdown, session replacement, fork, and tree navigation suspend participation by default. Suspended or crashed members remain resumable for 24 hours and then finalize automatically on the next maintenance opportunity. Explicit `/messages leave` and human revoke are immediately final. A human-confirmed new-session takeover keeps the stable member ID, role, durable inbox, routes, history, and allowance while rotating the private lease to fence the old process.
 
-The model sees identity only through the `peer_message` API. Private leases, broker tokens, queued bodies, and hidden dynamic identity context are not exposed.
+Ledger v3 migration is forward-only and runs when a human next opens messaging, not merely when the broker starts. Apply a compatible signed release and reload Pi only at a human-controlled idle boundary.
+
+The model sees identity and route metadata only through the static `peer_message` API. Its tool schema and prompt guidance do not change during a process; heartbeats and maintenance append no prompt traffic. Private leases, broker tokens, stored bodies, and hidden dynamic identity context are not exposed.
 
 ## Configuration
 

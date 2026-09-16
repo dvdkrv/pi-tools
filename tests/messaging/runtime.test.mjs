@@ -19,7 +19,7 @@ function fixture(count = 1) {
   const calls = []; const observed = []; const errors = []; const dispositions = [];
   let next = reservations; let ready = true;
   const backend = { peer, closed: false, getGroupSummary: async () => ({ group, remaining: 11, mode: 'armed' }), reserve: async () => { const value = next; next = []; return value; },
-    observe: async values => { observed.push(values); }, suspend: async () => { dispositions.push('suspend'); }, leave: async () => { dispositions.push('leave'); }, heartbeat: async () => {}, onChange: () => () => {} };
+    observe: async values => { observed.push(values); }, suspend: async () => { dispositions.push('suspend'); }, leave: async () => { dispositions.push('leave'); }, heartbeat: async () => {}, maintain: async () => {}, onChange: () => () => {} };
   const runtime = new MessagingRuntime(backend, group, { ready: () => ready, deliver: (...args) => calls.push(args), status: () => {}, error: text => errors.push(text) });
   return { runtime, backend, group, reservations, calls, observed, errors, dispositions, setReady: value => { ready = value; } };
 }

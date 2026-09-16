@@ -297,6 +297,9 @@ class NatsBackend implements MessagingBackend {
   async pause(ref: GroupRef): Promise<void> { await this.change(s => policy.pause(s, ref)); }
   async maintain(ref: GroupRef, now = Date.now()): Promise<void> {
     await this.change(state => { policy.groupOf(state, ref); policy.maintain(state, now); });
+    if (now - this.lastMaintenance >= 60_000) {
+      await this.prune(ref, true, now - policy.HISTORY_TTL_MS); this.lastMaintenance = now;
+    }
   }
   async send(input: SendInput, requestKey: string): Promise<MessageStatus> {
     const participation = this.joined(); const { peer, lease } = participation; policy.validateInput(input);

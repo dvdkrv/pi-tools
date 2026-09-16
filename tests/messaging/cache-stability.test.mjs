@@ -79,7 +79,7 @@ test('three pending senders produce one combined peer turn and spend three credi
   await receiverSession.session.prompt('/messages join batch-sdk'); assert.equal(requests.length, 0);
   await f.senders[0].arm(f.group, 3); await f.senders[0].pause(f.group);
   const markers = ['BATCH_MARKER_1', 'BATCH_MARKER_2', 'BATCH_MARKER_3'];
-  for (let index = 0; index < markers.length; index++) await f.senders[index].send({ toPeerId: f.receiver.peer.id, text: markers[index] }, `batch-${index}`);
+  for (let index = 0; index < markers.length; index++) await f.senders[index].send({ kind: 'notice', toPeerId: f.receiver.peer.id, text: markers[index] }, `batch-${index}`);
   await f.senders[0].arm(f.group, 3);
   await until(async () => requests.length === 1 && !receiverSession.session.isStreaming &&
     (await f.senders[0].listMessages(f.group)).every(message => message.state === 'observed'), 'one observed batch turn');
@@ -112,7 +112,7 @@ test('peer delivery remains append-only across a tool continuation', { timeout: 
   }, [work]);
   await receiverSession.session.prompt('/messages join cache-shape'); assert.equal(requests.length, 0);
   await f.senders[0].arm(f.group, 1); await f.senders[0].pause(f.group);
-  await f.senders[0].send({ toPeerId: f.receiver.peer.id, text: 'CACHE_APPEND_ONLY_MARKER' }, 'cache-message');
+  await f.senders[0].send({ kind: 'notice', toPeerId: f.receiver.peer.id, text: 'CACHE_APPEND_ONLY_MARKER' }, 'cache-message');
   await f.senders[0].arm(f.group, 1);
   await until(async () => requests.length === 2 && !receiverSession.session.isStreaming &&
     (await f.senders[0].listMessages(f.group))[0].state === 'observed', 'tool continuation and receipt');

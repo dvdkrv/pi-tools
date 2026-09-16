@@ -21,10 +21,10 @@ export interface Envelope {
   createdAt: number; text: string; kind?: Exclude<MessageKind, 'legacy'>; inReplyTo?: string;
 }
 export interface Reservation { group: GroupRef; peerId: string; message: MessageStatus; attemptId: string; round: number; envelope?: Envelope }
-export interface SendInput { kind?: Exclude<MessageKind, 'legacy'>; toPeerId: string; text: string; inReplyTo?: string }
+export interface SendInput { kind: Exclude<MessageKind, 'legacy'>; toPeerId: string; text: string; inReplyTo?: string }
 export interface GroupSummary {
   group: GroupRef; mode: Group['mode']; roundNumber: number; limit: number; used: number; remaining: number;
-  onlinePeers: number; pendingCount: number;
+  onlinePeers: number; pendingCount: number; queuedCount: number; attemptedCount: number; awaitingReplyCount: number; terminalUnresolvedCount: number; reservedCount: number;
 }
 export interface MessagingReader { getGroupSummary(ref: GroupRef): Promise<GroupSummary | null>; close(): Promise<void> }
 export interface MessagingBackend extends MessagingReader {

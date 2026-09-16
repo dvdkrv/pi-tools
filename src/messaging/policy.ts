@@ -29,15 +29,16 @@ export function validateDisplayName(value: string): string {
   if (typeof value !== 'string' || !value.trim() || [...value].length > 64 || safeText(value) !== value || /[\n\r\t]/.test(value)) fail('validation', 'Invalid display name');
   return value.trim();
 }
-export function validateInput(input: SendInput): SendInput {
+type HashInput = Omit<SendInput, 'kind'> & { kind?: SendInput['kind'] };
+export function validateInput(input: HashInput, allowLegacy = false): HashInput {
   if (typeof input.text !== 'string' || !input.text.trim() || Buffer.byteLength(input.text, 'utf8') > 8192) fail('validation', 'Message body must be nonempty and at most 8 KiB UTF-8');
   if (!uuid.test(input.toPeerId)) fail('validation', 'Invalid toPeerId: use the full routing id returned by peers');
-  if (input.kind !== undefined && !['notice', 'request', 'reply'].includes(input.kind)) fail('validation', 'Invalid message kind');
+  if ((!allowLegacy && input.kind === undefined) || (input.kind !== undefined && !['notice', 'request', 'reply'].includes(input.kind))) fail('validation', 'Message kind must be notice, request, or reply');
   if (input.inReplyTo !== undefined && !uuid.test(input.inReplyTo)) fail('validation', 'Invalid inReplyTo: use a message id, or omit it for a new message');
   if (input.kind === 'reply' ? input.inReplyTo === undefined : input.kind !== undefined && input.inReplyTo !== undefined) fail('validation', 'Only replies require inReplyTo');
   return { ...(input.kind ? { kind: input.kind } : {}), toPeerId: input.toPeerId, text: input.text, ...(input.inReplyTo ? { inReplyTo: input.inReplyTo } : {}) };
 }
-export function payloadHash(input: SendInput): string { return createHash('sha256').update(JSON.stringify(validateInput(input))).digest('hex'); }
+export function payloadHash(input: HashInput, allowLegacy = false): string { return createHash('sha256').update(JSON.stringify(validateInput(input, allowLegacy))).digest('hex'); }
 export function routeKey(fromPeerId: string, toPeerId: string): string { return `${fromPeerId}:${toPeerId}`; }
 export function newLedger(authorityId: string): Ledger {
   if (!uuid.test(authorityId)) fail('validation', 'Invalid authority ID');
@@ -74,20 +75,35 @@ function validateLedgerVersion(value: unknown, authorityId: string, version: 1 |
       if (!Object.hasOwn(peer, 'suspended') || typeof peer.suspended !== 'boolean') fail('corrupt', 'Invalid peer suspension state');
       if (!peer.active && peer.suspended) fail('corrupt', 'Inactive peers cannot be suspended');
       if (!Object.hasOwn(peer, 'leaseId') || typeof peer.leaseId !== 'string' || !uuid.test(peer.leaseId)) fail('corrupt', 'Invalid peer lease');
+      if (version === 3) {
+        if (peer.suspended && !isFiniteNumber(peer.suspendedAt)) fail('corrupt', 'Invalid peer suspension timestamp');
+        if (peer.suspendedAt !== undefined && !isFiniteNumber(peer.suspendedAt)) fail('corrupt', 'Invalid peer suspension timestamp');
+        if (!peer.active && (!isFiniteNumber(peer.endedAt) || !['leave', 'revoke', 'expired'].includes(String(peer.endReason)))) fail('corrupt', 'Invalid ended peer lifecycle');
+        if (peer.active && (peer.endedAt !== undefined || peer.endReason !== undefined)) fail('corrupt', 'Active peer cannot have ended lifecycle');
+      }
     }
   }
   if (version === 3) {
     for (const [key, route] of Object.entries(value.routes as Record<string, unknown>)) {
       if (!isRecord(route) || !hasFields(route, ['groupId', 'fromPeerId', 'toPeerId', 'mode']) || key !== routeKey(String(route.fromPeerId), String(route.toPeerId)) || !Object.hasOwn(peers, String(route.fromPeerId)) || !Object.hasOwn(peers, String(route.toPeerId)) || route.fromPeerId === route.toPeerId || !['open', 'closed', 'reply-only'].includes(String(route.mode))) fail('corrupt', 'Invalid route ledger');
       const from = peers[String(route.fromPeerId)] as Record<string, unknown>; const to = peers[String(route.toPeerId)] as Record<string, unknown>;
-      if (route.groupId !== from.groupId || route.groupId !== to.groupId) fail('corrupt', 'Invalid route ledger');
+      if (route.groupId !== from.groupId || route.groupId !== to.groupId || from.active !== true || to.active !== true) fail('corrupt', 'Invalid route ledger');
+      if (route.mode === 'reply-only') {
+        const request = typeof route.requestMessageId === 'string' ? messages[route.requestMessageId] : undefined;
+        if (!isRecord(request) || request.kind !== 'request' || request.senderPeerId !== route.toPeerId || request.recipientPeerId !== route.fromPeerId || !['pending-delivery', 'awaiting-reply'].includes(String(request.conversationState))) fail('corrupt', 'Invalid reply-only route request');
+        if ((route.observedAt === undefined) !== (route.expiresAt === undefined) || (route.observedAt !== undefined && (!isFiniteNumber(route.observedAt) || !isFiniteNumber(route.expiresAt)))) fail('corrupt', 'Invalid reply-only route deadline');
+      } else if (route.requestMessageId !== undefined || route.observedAt !== undefined || route.expiresAt !== undefined) fail('corrupt', 'Non-reply route has reply metadata');
     }
   }
   for (const [id, message] of Object.entries(messages)) {
     if (!isRecord(message) || !hasFields(message, ['id', 'sequence', 'groupId', 'senderPeerId', 'recipientPeerId', 'senderName', 'requestKey', 'hash', 'createdAt', 'state']) || !uuid.test(id) || message.id !== id || typeof message.groupId !== 'string' || !Object.hasOwn(groups, message.groupId) || typeof message.senderPeerId !== 'string' || !Object.hasOwn(peers, message.senderPeerId) || typeof message.recipientPeerId !== 'string' || !Object.hasOwn(peers, message.recipientPeerId)) fail('corrupt', 'Invalid message ledger');
     const sender = peers[message.senderPeerId]; const recipient = peers[message.recipientPeerId];
     if (!isRecord(sender) || !isRecord(recipient) || sender.groupId !== message.groupId || recipient.groupId !== message.groupId || !['queued', 'attempted', 'observed', 'canceled', 'dismissed', 'expired', 'terminal-unresolved'].includes(typeof message.state === 'string' ? message.state : '') || (version === 3 && !['legacy', 'notice', 'request', 'reply'].includes(String(message.kind))) || !isNonnegativeInteger(message.sequence) || message.sequence < 1 || message.sequence > value.sequence || typeof message.senderName !== 'string' || typeof message.requestKey !== 'string' || typeof message.hash !== 'string' || !/^[0-9a-f]{64}$/.test(message.hash) || !isFiniteNumber(message.createdAt)) fail('corrupt', 'Invalid message ledger');
-    if ((message.inReplyTo !== undefined && typeof message.inReplyTo !== 'string') || (message.attemptId !== undefined && (typeof message.attemptId !== 'string' || !uuid.test(message.attemptId))) || (message.attemptRound !== undefined && !isNonnegativeInteger(message.attemptRound)) || (message.attemptedAt !== undefined && !isFiniteNumber(message.attemptedAt)) || (message.observedAt !== undefined && !isFiniteNumber(message.observedAt)) || (message.terminalAt !== undefined && !isFiniteNumber(message.terminalAt))) fail('corrupt', 'Invalid optional message ledger');
+    if ((message.inReplyTo !== undefined && (typeof message.inReplyTo !== 'string' || !uuid.test(message.inReplyTo))) || (message.attemptId !== undefined && (typeof message.attemptId !== 'string' || !uuid.test(message.attemptId))) || (message.attemptRound !== undefined && !isNonnegativeInteger(message.attemptRound)) || (message.attemptedAt !== undefined && !isFiniteNumber(message.attemptedAt)) || (message.observedAt !== undefined && !isFiniteNumber(message.observedAt)) || (message.terminalAt !== undefined && !isFiniteNumber(message.terminalAt)) || (message.conversationTerminalAt !== undefined && !isFiniteNumber(message.conversationTerminalAt)) || (message.replyMessageId !== undefined && (typeof message.replyMessageId !== 'string' || !uuid.test(message.replyMessageId)))) fail('corrupt', 'Invalid optional message ledger');
+    if (version === 3 && message.kind === 'request' && !['pending-delivery', 'awaiting-reply', 'reply-pending', 'answered', 'unanswered'].includes(String(message.conversationState))) fail('corrupt', 'Invalid request conversation ledger');
+    if (version === 3 && message.kind !== 'request' && (message.conversationState !== undefined || message.conversationTerminalAt !== undefined || message.replyMessageId !== undefined)) fail('corrupt', 'Invalid non-request conversation ledger');
+    if (version === 3 && message.kind === 'reply' && message.inReplyTo === undefined) fail('corrupt', 'Reply requires request reference');
+    if (version === 3 && message.kind === 'notice' && message.inReplyTo !== undefined) fail('corrupt', 'Notice cannot reference a reply');
     if (['attempted', 'observed', 'dismissed'].includes(typeof message.state === 'string' ? message.state : '') && (!hasFields(message, ['attemptId', 'attemptRound', 'attemptedAt']) || typeof message.attemptId !== 'string' || !uuid.test(message.attemptId) || !isNonnegativeInteger(message.attemptRound) || !isFiniteNumber(message.attemptedAt))) fail('corrupt', 'Invalid attempt ledger');
   }
 }
@@ -98,10 +114,10 @@ export function migrateLedger(value: unknown, authorityId: string, _now = Date.n
   let peers: Record<string, StoredPeer>;
   if (value.version === 1) {
     validateLedgerVersion(value, authorityId, 1);
-    peers = Object.fromEntries(Object.entries(value.peers).map(([id, peer]) => [id, { ...peer, suspended: false, leaseId: randomUUID() }]));
+    peers = Object.fromEntries(Object.entries(value.peers).map(([id, peer]) => [id, { ...peer, suspended: false, leaseId: randomUUID(), ...(!peer.active ? { endedAt: peer.lastSeen, endReason: 'leave' as const } : {}) }]));
   } else {
     validateLedgerVersion(value, authorityId, 2);
-    peers = Object.fromEntries(Object.entries(value.peers).map(([id, peer]) => [id, { ...peer }]));
+    peers = Object.fromEntries(Object.entries(value.peers).map(([id, peer]) => [id, { ...peer, ...(peer.suspended ? { suspendedAt: peer.lastSeen } : {}), ...(!peer.active ? { endedAt: peer.lastSeen, endReason: 'leave' as const } : {}) }]));
   }
   const routes: Record<string, Route> = {};
   const current = Object.values(peers).filter(peer => peer.active);
@@ -181,7 +197,18 @@ export function takeoverPeer(s: Ledger, ref: GroupRef, sessionId: string, peerId
   peer.lastSeen = takenAt; peer.leaseId = randomUUID(); return peer;
 }
 function finalizePeer(s: Ledger, peer: StoredPeer, reason: 'leave' | 'revoke' | 'expired', now: number): void {
-  peer.active = false; peer.suspended = false; delete peer.suspendedAt; peer.endedAt = lifecycleTime(now); peer.endReason = reason; peer.leaseId = randomUUID();
+  const endedAt = lifecycleTime(now);
+  peer.active = false; peer.suspended = false; delete peer.suspendedAt; peer.endedAt = endedAt; peer.endReason = reason; peer.leaseId = randomUUID();
+  for (const message of Object.values(s.messages)) {
+    if (message.senderPeerId !== peer.id && message.recipientPeerId !== peer.id) continue;
+    if (message.state === 'queued') { message.state = 'expired'; message.terminalAt = endedAt; }
+    else if (message.state === 'attempted') { message.state = 'terminal-unresolved'; message.terminalAt = endedAt; }
+    if (message.kind === 'request' && ['pending-delivery', 'awaiting-reply', 'reply-pending'].includes(message.conversationState ?? '')) { message.conversationState = 'unanswered'; message.conversationTerminalAt = endedAt; }
+    if (message.kind === 'reply' && message.inReplyTo) {
+      const request = s.messages[message.inReplyTo];
+      if (request?.kind === 'request' && request.conversationState !== 'answered') { request.conversationState = 'unanswered'; request.conversationTerminalAt = endedAt; }
+    }
+  }
   for (const [key, route] of Object.entries(s.routes)) if (route.fromPeerId === peer.id || route.toPeerId === peer.id) delete s.routes[key];
 }
 export function suspendPeer(s: Ledger, lease: ParticipantLease, now = Date.now()): void {
@@ -244,7 +271,7 @@ export function prepareMessage(s: Ledger, senderLease: ParticipantLease, input: 
   if (group.limit - group.used - reservedSlots(s, group.id) < required) fail('allowance', 'No unspent messaging allowance remains for this message');
   if (Object.keys(s.messages).length >= 2000 || Object.values(s.messages).filter(m => m.groupId === sender.groupId && ['queued', 'attempted'].includes(m.state)).length >= 64) fail('full', 'Message queue/store full; cancel, dismiss, or prune from the human inbox');
   if (s.sequence >= Number.MAX_SAFE_INTEGER) fail('full', 'Sequence exhausted');
-  const kind = normalized.kind ?? 'legacy';
+  const kind = normalized.kind; if (!kind) fail('validation', 'Message kind is required');
   const m: MessageStatus = { id: randomUUID(), sequence: ++s.sequence, groupId: sender.groupId, senderPeerId: sender.id, recipientPeerId: recipient.id, senderName: sender.displayName, requestKey, hash, createdAt, kind, state: 'queued', ...(kind === 'request' ? { conversationState: 'pending-delivery' as const } : {}), ...(normalized.inReplyTo ? { inReplyTo: normalized.inReplyTo } : {}) };
   if (kind === 'notice') s.routes[routeKey(recipient.id, sender.id)].mode = 'closed';
   if (kind === 'request') s.routes[routeKey(recipient.id, sender.id)] = { groupId: sender.groupId, fromPeerId: recipient.id, toPeerId: sender.id, mode: 'reply-only', requestMessageId: m.id };
@@ -318,13 +345,13 @@ export function maintain(s: Ledger, now = Date.now()): void {
   for (const message of Object.values(s.messages).sort((a, b) => a.sequence - b.sequence)) {
     if (message.state === 'queued' && at >= message.createdAt + QUEUED_TTL_MS) {
       message.state = 'expired'; message.terminalAt = at;
-      if (message.kind === 'request') { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; }
+      if (message.kind === 'request') { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; s.routes[routeKey(message.recipientPeerId, message.senderPeerId)] = { groupId: message.groupId, fromPeerId: message.recipientPeerId, toPeerId: message.senderPeerId, mode: 'closed' }; }
       if (message.kind === 'reply' && message.inReplyTo && s.messages[message.inReplyTo]?.kind === 'request') {
         const request = s.messages[message.inReplyTo]; request.conversationState = 'unanswered'; request.conversationTerminalAt = at;
       }
     } else if (message.state === 'attempted' && message.attemptedAt !== undefined && at >= message.attemptedAt + ATTEMPT_TTL_MS) {
       message.state = 'terminal-unresolved'; message.terminalAt = at;
-      if (message.kind === 'request') { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; }
+      if (message.kind === 'request') { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; s.routes[routeKey(message.recipientPeerId, message.senderPeerId)] = { groupId: message.groupId, fromPeerId: message.recipientPeerId, toPeerId: message.senderPeerId, mode: 'closed' }; }
       if (message.kind === 'reply' && message.inReplyTo && s.messages[message.inReplyTo]?.kind === 'request') {
         const request = s.messages[message.inReplyTo]; request.conversationState = 'unanswered'; request.conversationTerminalAt = at;
       }
@@ -339,18 +366,41 @@ export function maintain(s: Ledger, now = Date.now()): void {
     if (at >= expiresAt) finalizePeer(s, peer, 'expired', at);
   }
 }
-export function resolveMessage(s: Ledger, ref: GroupRef, id: string, state: 'canceled' | 'dismissed'): void {
-  groupOf(s, ref); const m = Object.hasOwn(s.messages, id) ? s.messages[id] : undefined;
+export function resolveMessage(s: Ledger, ref: GroupRef, id: string, state: 'canceled' | 'dismissed', now = Date.now()): void {
+  groupOf(s, ref); const m = Object.hasOwn(s.messages, id) ? s.messages[id] : undefined; const terminalAt = lifecycleTime(now);
   if (!m || m.groupId !== ref.id || (state === 'canceled' ? m.state !== 'queued' : state !== 'dismissed' || m.state !== 'attempted')) fail('validation', 'Message is not eligible for that recovery action');
-  m.state = state; m.terminalAt = Date.now();
+  m.state = state; m.terminalAt = terminalAt;
+  if (m.kind === 'request') {
+    m.conversationState = 'unanswered'; m.conversationTerminalAt = terminalAt;
+    const key = routeKey(m.recipientPeerId, m.senderPeerId); const route = s.routes[key];
+    if (route?.mode === 'reply-only' && route.requestMessageId === m.id) s.routes[key] = { groupId: m.groupId, fromPeerId: m.recipientPeerId, toPeerId: m.senderPeerId, mode: 'closed' };
+  }
+  if (m.kind === 'reply' && m.inReplyTo) {
+    const request = s.messages[m.inReplyTo];
+    if (request?.kind === 'request' && request.replyMessageId === m.id) { request.conversationState = 'unanswered'; request.conversationTerminalAt = terminalAt; }
+  }
 }
 export function prunable(s: Ledger, ref: GroupRef, before: number): string[] {
   groupOf(s, ref);
-  return Object.values(s.messages).filter(m => m.groupId === ref.id && ['observed', 'canceled', 'dismissed'].includes(m.state) && !s.peers[m.senderPeerId].active && (m.terminalAt ?? Infinity) < before).map(m => m.id);
+  const terminal = new Set(['observed', 'canceled', 'dismissed', 'expired', 'terminal-unresolved']);
+  const eligible = Object.values(s.messages).filter(message => {
+    const completedAt = Math.max(message.terminalAt ?? -Infinity, message.conversationTerminalAt ?? -Infinity);
+    const conversationDone = message.kind !== 'request' || ['answered', 'unanswered'].includes(message.conversationState ?? '');
+    return message.groupId === ref.id && terminal.has(message.state) && conversationDone && completedAt < before;
+  });
+  const ids = new Set(eligible.map(message => message.id));
+  return eligible.filter(message => !Object.values(s.messages).some(other => other.inReplyTo === message.id && !ids.has(other.id))).map(message => message.id);
 }
 export function summary(s: Ledger, ref: GroupRef): GroupSummary {
-  const g = groupOf(s, ref);
-  return { group: refOf(g), mode: g.mode, roundNumber: g.round, limit: g.limit, used: g.used, remaining: g.limit - g.used, onlinePeers: Object.values(s.peers).filter(p => p.groupId === g.id && peerPresence(p) === 'online').length, pendingCount: Object.values(s.messages).filter(m => m.groupId === g.id && ['queued', 'attempted'].includes(m.state)).length };
+  const g = groupOf(s, ref); const messages = Object.values(s.messages).filter(message => message.groupId === g.id);
+  const queuedCount = messages.filter(message => message.state === 'queued').length;
+  const attemptedCount = messages.filter(message => message.state === 'attempted').length;
+  return { group: refOf(g), mode: g.mode, roundNumber: g.round, limit: g.limit, used: g.used, remaining: g.limit - g.used,
+    onlinePeers: Object.values(s.peers).filter(p => p.groupId === g.id && peerPresence(p) === 'online').length,
+    pendingCount: queuedCount + attemptedCount, queuedCount, attemptedCount,
+    awaitingReplyCount: messages.filter(message => message.kind === 'request' && message.conversationState === 'awaiting-reply').length,
+    terminalUnresolvedCount: messages.filter(message => message.state === 'terminal-unresolved').length,
+    reservedCount: reservedSlots(s, g.id) };
 }
 export function envelope(s: Ledger, m: MessageStatus, text: string): Envelope {
   const protocol = m.kind === 'legacy' ? {} : { kind: m.kind, version: 2 as const };
@@ -358,5 +408,5 @@ export function envelope(s: Ledger, m: MessageStatus, text: string): Envelope {
 }
 export function validateEnvelope(e: Envelope, s: Ledger, m: MessageStatus): void {
   const expectedVersion = m.kind === 'legacy' ? 1 : 2; const expectedKind = m.kind === 'legacy' ? undefined : m.kind;
-  if (!e || e.version !== expectedVersion || e.kind !== expectedKind || e.authorityId !== s.authorityId || e.groupId !== m.groupId || e.messageId !== m.id || e.senderPeerId !== m.senderPeerId || e.recipientPeerId !== m.recipientPeerId || e.senderName !== m.senderName || e.createdAt !== m.createdAt || e.inReplyTo !== m.inReplyTo || payloadHash({ ...(e.kind ? { kind: e.kind } : {}), toPeerId: e.recipientPeerId, text: e.text, ...(e.inReplyTo ? { inReplyTo: e.inReplyTo } : {}) }) !== m.hash) fail('corrupt', 'Message envelope does not match authoritative metadata');
+  if (!e || e.version !== expectedVersion || e.kind !== expectedKind || e.authorityId !== s.authorityId || e.groupId !== m.groupId || e.messageId !== m.id || e.senderPeerId !== m.senderPeerId || e.recipientPeerId !== m.recipientPeerId || e.senderName !== m.senderName || e.createdAt !== m.createdAt || e.inReplyTo !== m.inReplyTo || payloadHash({ ...(e.kind ? { kind: e.kind } : {}), toPeerId: e.recipientPeerId, text: e.text, ...(e.inReplyTo ? { inReplyTo: e.inReplyTo } : {}) }, m.kind === 'legacy') !== m.hash) fail('corrupt', 'Message envelope does not match authoritative metadata');
 }

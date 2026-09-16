@@ -37,7 +37,7 @@ export class MessagingRuntime {
     this.unsubscribe = this.backend.onChange(() => { void this.wake(); });
     const generation = this.generation;
     const heartbeat = async () => {
-      try { await this.backend.heartbeat(); if (generation === this.generation) await this.wake(); }
+      try { await this.backend.heartbeat(); await this.backend.maintain(this.group); if (generation === this.generation) await this.wake(); }
       catch (error) { if (generation === this.generation) this.fail(error); }
       if (!this.stopped && generation === this.generation) { this.timer = setTimeout(heartbeat, 5000); this.timer.unref(); }
     };

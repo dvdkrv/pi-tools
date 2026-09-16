@@ -52,7 +52,7 @@ test('migrates v1 ledger once before backend exposure without losing initialized
   const { routes, ...withoutRoutes } = current;
   const projection = {
     ...withoutRoutes, version: 1,
-    peers: Object.fromEntries(Object.entries(current.peers).map(([id, { suspended, leaseId, ...peer }]) => [id, peer])),
+    peers: Object.fromEntries(Object.entries(current.peers).map(([id, { suspended, leaseId, endedAt, endReason, ...peer }]) => [id, peer])),
     messages: Object.fromEntries(Object.entries(current.messages).map(([id, { kind, ...message }]) => [id, message])),
   };
   assert.equal(JSON.stringify(projection), JSON.stringify(legacy), 'all v1 JSON fields and ordering must survive migration');
@@ -73,7 +73,7 @@ test('resumes a preserved durable inbox as one ordered three-message batch', asy
   }
   await f.a.arm(f.g, 3);
   const original = f.b.peer; const sent = [];
-  for (let index = 0; index < senders.length; index++) sent.push(await senders[index].send({ toPeerId: original.id, text: `preserved-${index}` }, `preserved-${index}`));
+  for (let index = 0; index < senders.length; index++) sent.push(await senders[index].send({ kind: 'notice', toPeerId: original.id, text: `preserved-${index}` }, `preserved-${index}`));
   const beforeInfo = await f.a.jsm.consumers.info('PM_MESSAGES', consumerName(original.id));
   const beforeCount = (await f.a.jsm.streams.info('PM_MESSAGES')).state.consumer_count;
 
@@ -124,6 +124,17 @@ test('human-confirmed takeover attaches a new session to the same durable member
   assert.deepEqual((await replacement.reserve()).map(item => item.message.id), [queued.id]);
 });
 
+test('24 hour suspended-member maintenance hides the member and deletes its durable consumer', async t => {
+  const f = await fixture(t); if (!f) return;
+  const original = f.b.peer; await f.b.suspend(); await f.a.heartbeat();
+  const suspended = (await f.a.peers(f.g)).find(peer => peer.id === original.id);
+  await f.a.maintain(f.g, suspended.suspendedAt + 24 * 60 * 60 * 1000);
+  const ended = (await f.a.peers(f.g)).find(peer => peer.id === original.id);
+  assert.equal(ended, undefined, 'unreferenced finalized member tombstone should be reclaimed');
+  assert.equal((await f.a.routes(f.g)).some(route => route.fromPeerId === original.id || route.toPeerId === original.id), false);
+  await assert.rejects(f.a.jsm.consumers.info('PM_MESSAGES', consumerName(original.id)));
+});
+
 test('rejected resume of a left peer does not recreate its durable', async t => {
   const f = await fixture(t); if (!f) return;
   const departed = f.b.peer; const name = consumerName(departed.id);
@@ -151,7 +162,8 @@ test('resume CAS rejection after creating a durable removes the now-inactive orp
     const binding = await bind(...args);
     const entry = await kv.get('state'); const state = entry.json();
     state.peers[original.id].active = false; state.peers[original.id].suspended = false;
-    state.peers[original.id].leaseId = randomUUID();
+    state.peers[original.id].endedAt = Date.now(); state.peers[original.id].endReason = 'revoke'; state.peers[original.id].leaseId = randomUUID();
+    state.routes = Object.fromEntries(Object.entries(state.routes).filter(([, route]) => route.fromPeerId !== original.id && route.toPeerId !== original.id));
     await kv.update('state', JSON.stringify(state), entry.revision);
     return binding;
   };
@@ -199,9 +211,9 @@ test('attempted message and allowance survive suspend and resume until explicit 
   const sender = await connectBackend(f.config); t.after(() => sender.close());
   await sender.join(f.g, { sessionId: 'waiting-sender', displayName: 'Waiting Sender' });
   await f.a.arm(f.g, 2);
-  const attemptedMessage = await f.a.send({ toPeerId: f.b.peer.id, text: 'attempted' }, 'attempted-before-resume');
+  const attemptedMessage = await f.a.send({ kind: 'notice', toPeerId: f.b.peer.id, text: 'attempted' }, 'attempted-before-resume');
   const reservation = (await f.b.reserve())[0];
-  const waiting = await sender.send({ toPeerId: f.b.peer.id, text: 'waiting' }, 'waiting-before-resume');
+  const waiting = await sender.send({ kind: 'notice', toPeerId: f.b.peer.id, text: 'waiting' }, 'waiting-before-resume');
   const original = f.b.peer;
   const beforeAttempt = (await f.a.listMessages(f.g)).find(message => message.id === attemptedMessage.id);
   const beforeSummary = await f.a.getGroupSummary(f.g);
@@ -246,7 +258,7 @@ test('real queue: opt-in, shared allowance, exact envelope, idempotency and term
   const { a, b, g } = f;
   const c = await connectBackend(f.config); t.after(() => c.close());
   await c.join(g, { sessionId: 'c', displayName: 'Carol' });
-  const input = { toPeerId: b.peer.id, text: 'Hello Bob' };
+  const input = { kind: 'notice', toPeerId: b.peer.id, text: 'Hello Bob' };
   await assert.rejects(a.send(input, 'before-arm'), /allowance|capacity/i);
   await a.arm(g, 2);
   const m = await a.send(input, 'call-1');
@@ -275,7 +287,7 @@ test('real queue admits eight distinct senders to one recipient as one ordered b
   }
   await f.a.arm(f.g, 8);
   const sent = [];
-  for (let i = 0; i < senders.length; i++) sent.push(await senders[i].send({ toPeerId: f.b.peer.id, text: `batch-${i}` }, `batch-${i}`));
+  for (let i = 0; i < senders.length; i++) sent.push(await senders[i].send({ kind: 'notice', toPeerId: f.b.peer.id, text: `batch-${i}` }, `batch-${i}`));
   const batch = await f.b.reserve();
   assert.deepEqual(batch.map(r => r.message.id), sent.map(m => m.id));
   assert.deepEqual(batch.map(r => r.envelope.text), senders.map((_, i) => `batch-${i}`));
@@ -295,15 +307,16 @@ test('role tool publishes self-name without rerouting queued work or inheriting 
     sendMessage: (...args) => delivered.push(args) }, async () => f.a, async () => {});
   t.after(() => events.get('session_shutdown')({}, ctx));
   await f.a.leave(); await commands.get('messages').handler('join testing', ctx);
-  const oldId = f.a.peer.id; await f.a.arm(f.g, 3);
-  const before = await f.a.send({ toPeerId: f.b.peer.id, text: 'before rename' }, 'before');
-  const incoming = await f.b.send({ toPeerId: oldId, text: 'old inbox' }, 'incoming');
+  const oldId = f.a.peer.id; const c = await connectBackend(f.config); t.after(() => c.close());
+  await c.join(f.g, { sessionId: 'c', displayName: 'Carol' }); await f.a.arm(f.g, 3);
+  const before = await f.a.send({ kind: 'notice', toPeerId: f.b.peer.id, text: 'before rename' }, 'before');
+  const incoming = await c.send({ kind: 'notice', toPeerId: oldId, text: 'old inbox' }, 'incoming');
   await f.b.observe(await f.b.reserve());
   await tools.get('peer_message').execute('role', { action: 'rename', displayName: 'test-reviewer', toPeerId: '', text: '', inReplyTo: '', beforeSequence: 1 }, undefined, undefined, ctx);
   const discovered = (await f.b.peers(f.g)).find(p => p.id === oldId);
   assert.equal(discovered.sessionId, 'a'); assert.equal(discovered.displayName, 'test-reviewer');
   assert.equal(f.a.peer.displayName, 'test-reviewer');
-  const sent = await tools.get('peer_message').execute('after', { action: 'send', toPeerId: f.b.peer.id, text: 'after rename', inReplyTo: '', beforeSequence: 1 }, undefined, undefined, ctx);
+  const sent = await tools.get('peer_message').execute('after', { action: 'send', kind: 'notice', toPeerId: f.b.peer.id, text: 'after rename', inReplyTo: '', beforeSequence: 1 }, undefined, undefined, ctx);
   const after = (await f.a.listMessages(f.g)).find(m => m.id === JSON.parse(sent.content[0].text).id);
   assert.equal(after.inReplyTo, undefined);
   assert.equal((await f.b.readBody(f.g, before.id)).senderName, 'a');
@@ -313,7 +326,7 @@ test('role tool publishes self-name without rerouting queued work or inheriting 
   await commands.get('messages').handler('join testing', ctx);
   assert.notEqual(f.a.peer.id, oldId); assert.equal(f.a.peer.sessionId, 'a'); assert.equal(f.a.peer.displayName, 'a');
   const oldInbox = (await f.a.listMessages(f.g)).find(m => m.id === incoming.id);
-  assert.equal(oldInbox.recipientPeerId, oldId); assert.equal(oldInbox.state, 'queued');
+  assert.equal(oldInbox.recipientPeerId, oldId); assert.equal(oldInbox.state, 'expired');
   const summary = await f.a.getGroupSummary(f.g); assert.equal(summary.limit, 3); assert.equal(summary.used, 1);
   assert.equal(delivered.length, 0);
 });
@@ -345,7 +358,7 @@ test('concurrent sends preserve one identity and metadata reads cannot change al
   const f = await fixture(t); if (!f) return;
   const { a, b, g } = f;
   await a.arm(g, 2);
-  const messages = await Promise.all(Array.from({ length: 8 }, () => a.send({ toPeerId: b.peer.id, text: 'once' }, 'same-call')));
+  const messages = await Promise.all(Array.from({ length: 8 }, () => a.send({ kind: 'notice', toPeerId: b.peer.id, text: 'once' }, 'same-call')));
   assert.equal(new Set(messages.map(m => m.id)).size, 1);
   const r = await b.reserve(); await b.observe(r);
   assert.deepEqual(await b.reserve(), []);
@@ -358,7 +371,7 @@ test('concurrent sends preserve one identity and metadata reads cannot change al
 test('hard broker restart preserves attempted records, budgets and old inboxes', async t => {
   const f = await fixture(t); if (!f) return;
   const { a, b, g } = f;
-  await a.arm(g, 2); const m = await a.send({ toPeerId: b.peer.id, text: 'uncertain' }, 'c');
+  await a.arm(g, 2); const m = await a.send({ kind: 'notice', toPeerId: b.peer.id, text: 'uncertain' }, 'c');
   const batch = await b.reserve(); assert.equal(batch.length, 1); await f.stop('SIGKILL'); await f.start();
   const c = await connectBackend(f.config); t.after(() => c.close());
   assert.equal((await c.getGroupSummary(g)).remaining, 1);
@@ -379,16 +392,16 @@ test('explicit maintenance expires queued work before admission while retaining 
   assert.equal((await f.a.getGroupSummary(f.g)).used, 0);
 });
 
-test('prune deletes only terminal inactive-sender records; pending and counters survive', async t => {
+test('explicit prune removes terminal history regardless of sender activity', async t => {
   const f = await fixture(t); if (!f) return;
   const { a, b, g } = f; await a.arm(g, 2);
-  const m = await a.send({ toPeerId: b.peer.id, text: 'terminal' }, 'one');
+  const m = await a.send({ kind: 'notice', toPeerId: b.peer.id, text: 'terminal' }, 'one');
   await a.resolveMessage(g, m.id, 'canceled');
-  const pending = await a.send({ toPeerId: b.peer.id, text: 'pending' }, 'two');
-  assert.deepEqual(await a.prune(g), []);
-  await a.leave(); assert.deepEqual(await b.prune(g), [m.id]);
-  assert.deepEqual(await b.prune(g, true), [m.id]);
-  assert.equal((await b.listMessages(g))[0].id, pending.id);
+  const pending = await a.send({ kind: 'notice', toPeerId: b.peer.id, text: 'pending' }, 'two');
+  assert.deepEqual(await a.prune(g), [m.id]);
+  await a.leave(); assert.deepEqual(await b.prune(g), [m.id, pending.id]);
+  assert.deepEqual(await b.prune(g, true), [m.id, pending.id]);
+  assert.equal((await b.listMessages(g)).length, 0);
   assert.equal((await b.getGroupSummary(g)).limit, 2);
 });
 
@@ -409,7 +422,7 @@ test('missing publication is inspectable without inventing a body or deleting th
   const { jetstreamManager } = await import('@nats-io/jetstream');
   const nc = await connect({ servers: f.config.server, token: f.config.token }); t.after(() => nc.close());
   await f.a.arm(f.g, 1);
-  const m = await f.a.send({ toPeerId: f.b.peer.id, text: 'body' }, 'missing');
+  const m = await f.a.send({ kind: 'notice', toPeerId: f.b.peer.id, text: 'body' }, 'missing');
   await (await jetstreamManager(nc)).streams.purge('PM_MESSAGES', { filter: `pm.message.${f.g.id}.${f.b.peer.id}.${m.id}` });
   assert.equal(await f.a.readBody(f.g, m.id), null);
   assert.equal((await f.a.listMessages(f.g))[0].state, 'queued');

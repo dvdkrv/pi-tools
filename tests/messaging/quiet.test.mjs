@@ -68,7 +68,7 @@ async function fixture(t, holdAdmission = false) {
   await session.bindExtensions({ mode: 'tui', onError: e => errors.push(e.error), uiContext: {
     confirm: async () => true, input: async () => { throw Error('Unexpected input'); },
     notify: (text, level) => { if (level === 'error' || level === 'warning') errors.push(text); },
-    setStatus: (_key, text) => { if (text?.includes('1 pending')) pendingStatus = true; },
+    setStatus: (_key, text) => { if (text?.includes('1 queued')) pendingStatus = true; },
   } });
   await session.prompt('/messages join quiet'); assert.equal(requests.length, 0);
   await sender.arm(group, 1);
@@ -89,7 +89,7 @@ test('real SDK keeps busy messages in the broker until the whole work run finish
   // Allow any earlier empty idle pull to settle before measuring the busy interval.
   await until(() => f.reservesInFlight() === 0, 'pre-existing empty pull');
   const before = f.reserveCalls();
-  await f.sender.send({ toPeerId: f.receiver.peer.id, text: marker }, 'busy');
+  await f.sender.send({ kind: 'notice', toPeerId: f.receiver.peer.id, text: marker }, 'busy');
   await until(f.pendingStatus, 'busy pending status');
   assert.equal(f.reserveCalls(), before, 'Busy notifications must not start a reservation');
   assert.equal((await f.sender.listMessages(f.group))[0].state, 'queued');
@@ -99,7 +99,7 @@ test('real SDK keeps busy messages in the broker until the whole work run finish
 
 test('real SDK queues an idle-to-busy admitted message after work rather than steering between steps', { timeout: 20000 }, async t => {
   const f = await fixture(t, true); if (!f) return;
-  await f.sender.send({ toPeerId: f.receiver.peer.id, text: marker }, 'race');
+  await f.sender.send({ kind: 'notice', toPeerId: f.receiver.peer.id, text: marker }, 'race');
   await f.admitted.promise;
   const work = f.session.prompt('Do two steps of ordinary work'); await f.started[0].promise;
   f.releaseAdmission.resolve(); await until(() => f.session.agent.hasQueuedMessages(), 'Pi queue after admission race');

@@ -17,7 +17,7 @@ async function handle(request) {
     case 'rename':
       await backend.heartbeat('old-process-role'); return undefined;
     case 'send':
-      return backend.send({ toPeerId: request.toPeerId, text: 'forbidden old-process send' }, 'old-process-send');
+      return backend.send({ kind: 'notice', toPeerId: request.toPeerId, text: 'forbidden old-process send' }, 'old-process-send');
     case 'reserve':
       reservations = await backend.reserve();
       return { messageIds: reservations.map(item => item.message.id) };

@@ -52,6 +52,7 @@ export async function handleMessages(args: string, ctx: ExtensionCommandContext,
   }
   if (command === 'leave') { await controls.leave(); controls.guard(); ctx.ui.notify('Left messaging. Already admitted messages cannot be recalled.', 'info'); return; }
   const group = await selectGroup(command === 'join'); if (!group) return;
+  await b.maintain(group);
   if (command === 'join') {
     if (!ctx.sessionManager.getSessionFile()) fail('participation', 'Joining requires a saved Pi session, not ephemeral mode');
     const sessionId = ctx.sessionManager.getSessionId(); const current = b.peer;
@@ -158,6 +159,6 @@ export async function handleMessages(args: string, ctx: ExtensionCommandContext,
   } else if (command === 'status') {
     const summary = await b.getGroupSummary(group);
     const peers = (await b.peers(group)).filter(peer => peer.active);
-    ctx.ui.notify(safeText(`${group.label}: ${summary?.mode ?? 'missing'}, ${summary?.remaining ?? 0} admissions remaining; ${summary?.pendingCount ?? 0} pending/uncertain.\n${peers.map((p, i) => `${i + 1}. ${peerLabel(p)}: ${peerPresence(p)}`).join('\n')}`), 'info');
+    ctx.ui.notify(safeText(`${group.label}: ${summary?.mode ?? 'missing'}, ${summary?.remaining ?? 0} admissions remaining; ${summary?.queuedCount ?? 0} queued, ${summary?.attemptedCount ?? 0} attempted, ${summary?.awaitingReplyCount ?? 0} awaiting reply, ${summary?.terminalUnresolvedCount ?? 0} terminal unresolved.\n${peers.map((p, i) => `${i + 1}. ${peerLabel(p)}: ${peerPresence(p)}`).join('\n')}`), 'info');
   } else fail('validation', 'Unknown /messages command. Use status, join, leave, arm, pause, send, routes, inbox, prune, or revoke.');
 }

@@ -15,13 +15,13 @@ function fixture() {
 }
 function lease(peer) { return { peerId: peer.id, leaseId: peer.leaseId }; }
 function send(f, key = randomUUID(), text = 'hello') {
-  return p.prepareMessage(f.state, lease(f.a), { toPeerId: f.b.id, text }, key);
+  return p.prepareMessage(f.state, lease(f.a), { kind: 'notice', toPeerId: f.b.id, text }, key);
 }
 function addPeer(f, suffix) {
   return p.joinPeer(f.state, f.group, { sessionId: `session-${suffix}`, displayName: `Peer ${suffix}` });
 }
 function sendFrom(f, sender, key = randomUUID(), text = 'hello') {
-  return p.prepareMessage(f.state, lease(sender), { toPeerId: f.b.id, text }, key);
+  return p.prepareMessage(f.state, lease(sender), { kind: 'notice', toPeerId: f.b.id, text }, key);
 }
 
 test('a notice atomically closes the reverse route and rejects a disguised notice response', () => {
@@ -68,6 +68,49 @@ test('only confirmed human recovery can replace a reply-only route', () => {
   assert.equal(f.state.routes[p.routeKey(f.b.id, f.a.id)].mode, 'open');
   assert.equal(f.state.messages[request.id].conversationState, 'unanswered');
   assert.equal(f.state.messages[request.id].conversationTerminalAt, 2_000);
+});
+
+test('canceling or dismissing protocol work closes its conversation without refunding attempts', () => {
+  const f = fixture(); p.arm(f.state, f.group, 2);
+  const request = p.prepareMessage(f.state, lease(f.a), { kind: 'request', toPeerId: f.b.id, text: 'review' }, 'request', 1_000);
+  p.resolveMessage(f.state, f.group, request.id, 'canceled', 2_000);
+  assert.equal(request.conversationState, 'unanswered'); assert.equal(request.conversationTerminalAt, 2_000);
+  assert.equal(p.reservedSlots(f.state, f.group.id), 0);
+  assert.equal(f.state.routes[p.routeKey(f.b.id, f.a.id)].mode, 'closed');
+
+  const second = fixture(); p.arm(second.state, second.group, 2);
+  const attempted = p.prepareMessage(second.state, lease(second.a), { kind: 'request', toPeerId: second.b.id, text: 'review' }, 'attempted', 1_000);
+  p.admit(second.state, lease(second.b), attempted.id, 1_100);
+  p.resolveMessage(second.state, second.group, attempted.id, 'dismissed', 2_000);
+  assert.equal(attempted.conversationState, 'unanswered'); assert.equal(second.state.groups[second.group.id].used, 1);
+});
+
+test('member finalization immediately terminalizes related work and releases only unspent slots', () => {
+  const f = fixture(); p.arm(f.state, f.group, 2);
+  const queued = p.prepareMessage(f.state, lease(f.a), { kind: 'request', toPeerId: f.b.id, text: 'queued' }, 'queued', 1_000);
+  p.leavePeer(f.state, lease(f.b), 2_000);
+  assert.equal(f.state.messages[queued.id].state, 'expired');
+  assert.equal(f.state.messages[queued.id].conversationState, 'unanswered');
+  assert.equal(p.reservedSlots(f.state, f.group.id), 0);
+  assert.equal(Object.values(f.state.routes).some(route => route.fromPeerId === f.b.id || route.toPeerId === f.b.id), false);
+
+  const second = fixture(); p.arm(second.state, second.group, 1);
+  const attempted = p.prepareMessage(second.state, lease(second.a), { kind: 'notice', toPeerId: second.b.id, text: 'attempted' }, 'attempted', 1_000);
+  p.admit(second.state, lease(second.b), attempted.id, 1_100);
+  p.revokePeer(second.state, second.group, second.b.id, 2_000);
+  assert.equal(second.state.messages[attempted.id].state, 'terminal-unresolved');
+  assert.equal(second.state.groups[second.group.id].used, 1);
+});
+
+test('maintenance finalizes stale and suspended members at the exact 24 hour boundary', () => {
+  const state = p.newLedger(randomUUID()); const group = p.createGroup(state, 'member-expiry');
+  const stale = p.joinPeer(state, group, { sessionId: 'stale', displayName: 'Stale' }, 100);
+  const suspended = p.joinPeer(state, group, { sessionId: 'suspended', displayName: 'Suspended' }, 100);
+  p.suspendPeer(state, p.leaseOf(suspended), 200);
+  p.maintain(state, 100 + p.MEMBER_TTL_MS - 1); assert.equal(stale.active, true);
+  p.maintain(state, 100 + p.MEMBER_TTL_MS); assert.equal(stale.active, false); assert.equal(stale.endReason, 'expired');
+  assert.equal(suspended.active, true);
+  p.maintain(state, 200 + p.MEMBER_TTL_MS); assert.equal(suspended.active, false); assert.equal(suspended.endReason, 'expired');
 });
 
 test('maintenance expires queued and attempted work without refunding spent admission', () => {
@@ -180,7 +223,7 @@ test('an existing recipient attempt blocks a new batch and another inbox cannot 
   p.observe(f.state, lease(f.b), firstReservation);
   p.observe(f.state, lease(f.b), p.admit(f.state, lease(f.b), waiting.id));
   const sender = addPeer(f, 'other-sender');
-  const other = p.prepareMessage(f.state, lease(sender), { toPeerId: otherRecipient.id, text: 'other inbox' }, 'other-inbox');
+  const other = p.prepareMessage(f.state, lease(sender), { kind: 'notice', toPeerId: otherRecipient.id, text: 'other inbox' }, 'other-inbox');
   assert.throws(() => p.admitBatch(f.state, lease(f.b), [other.id]), /inbox|recipient|corrupt/i);
 });
 
@@ -211,11 +254,11 @@ test('reject invalid bodies, names, groups, cross-group routing, replies, self-s
   for (const text of ['', '   ', '🙂'.repeat(2049)]) assert.throws(() => send(f, randomUUID(), text));
   for (const name of ['../bad', 'x.*', 'Upper', 'a'.repeat(49)]) assert.throws(() => p.createGroup(f.state, name));
   assert.throws(() => p.joinPeer(f.state, f.group, { sessionId: 's', displayName: '\x1b[31mname' }));
-  assert.throws(() => p.prepareMessage(f.state, lease(f.a), { toPeerId: f.a.id, text: 'x' }, 'self'));
+  assert.throws(() => p.prepareMessage(f.state, lease(f.a), { kind: 'notice', toPeerId: f.a.id, text: 'x' }, 'self'));
   const g2 = p.createGroup(f.state, 'other');
   const outsider = p.joinPeer(f.state, g2, { sessionId: 's', displayName: 'Other' });
-  assert.throws(() => p.prepareMessage(f.state, lease(f.a), { toPeerId: outsider.id, text: 'x' }, 'cross'));
-  assert.throws(() => p.prepareMessage(f.state, lease(f.a), { toPeerId: f.b.id, text: 'x', inReplyTo: randomUUID() }, 'reply'));
+  assert.throws(() => p.prepareMessage(f.state, lease(f.a), { kind: 'notice', toPeerId: outsider.id, text: 'x' }, 'cross'));
+  assert.throws(() => p.prepareMessage(f.state, lease(f.a), { kind: 'notice', toPeerId: f.b.id, text: 'x', inReplyTo: randomUUID() }, 'reply'));
   p.leavePeer(f.state, lease(f.a));
   assert.throws(() => send(f), /active|lease|participation/i);
 });
@@ -248,14 +291,14 @@ test('pause, dismissal, and revocation cannot refund or replay; forged receipts 
   assert.throws(() => p.admit(f.state, departedLease, next.id), /participation|lease/i);
 });
 
-test('pruning preserves unresolved work and live-sender deduplication', () => {
+test('final leave terminalizes unresolved work while retaining deduplication history', () => {
   const f = fixture(); p.arm(f.state, f.group, 2);
   const canceled = send(f); p.resolveMessage(f.state, f.group, canceled.id, 'canceled');
   const queued = send(f);
-  assert.deepEqual(p.prunable(f.state, f.group, Infinity), []);
-  p.leavePeer(f.state, lease(f.a));
   assert.deepEqual(p.prunable(f.state, f.group, Infinity), [canceled.id]);
-  assert.equal(f.state.messages[queued.id].state, 'queued');
+  p.leavePeer(f.state, lease(f.a));
+  assert.deepEqual(p.prunable(f.state, f.group, Infinity), [canceled.id, queued.id]);
+  assert.equal(f.state.messages[queued.id].state, 'expired');
 });
 
 test('lease rotation fences every old participant mutation after suspended recipient resume', () => {
@@ -286,7 +329,7 @@ test('lease rotation fences every old participant mutation after suspended recip
   for (const operation of [
     () => p.heartbeat(f.state, oldLease),
     () => p.heartbeat(f.state, oldLease, 'Hijacked Name'),
-    () => p.prepareMessage(f.state, oldLease, { toPeerId: f.a.id, text: 'stale send' }, 'stale-send'),
+    () => p.prepareMessage(f.state, oldLease, { kind: 'notice', toPeerId: f.a.id, text: 'stale send' }, 'stale-send'),
     () => p.canReceive(f.state, oldLease),
     () => p.observeBatch(f.state, oldLease, batch),
     () => p.suspendPeer(f.state, oldLease),
@@ -393,7 +436,7 @@ test('bare peer IDs never bypass exact lease authorization', () => {
   for (const operation of [
     () => p.requireLease(f.state, f.a.id),
     () => p.heartbeat(f.state, f.a.id),
-    () => p.prepareMessage(f.state, f.a.id, { toPeerId: f.b.id, text: 'bare send' }, 'bare-send'),
+    () => p.prepareMessage(f.state, f.a.id, { kind: 'notice', toPeerId: f.b.id, text: 'bare send' }, 'bare-send'),
     () => p.canReceive(f.state, f.b.id),
     () => p.admitBatch(f.state, f.b.id, []),
     () => p.admit(f.state, f.b.id, randomUUID()),
@@ -464,7 +507,7 @@ test('v1 ledger migration preserves every authoritative field and adds private l
   assert.deepEqual(Object.keys(ledger.routes).sort(), [p.routeKey(activeRecipientId, activeSenderId), p.routeKey(activeSenderId, activeRecipientId)].sort());
   assert.equal(ledger.sequence, before.sequence);
   for (const [id, oldPeer] of Object.entries(before.peers)) {
-    assert.deepEqual(p.publicPeer(ledger.peers[id]), { ...oldPeer, suspended: false });
+    assert.deepEqual(p.publicPeer(ledger.peers[id]), { ...oldPeer, suspended: false, ...(!oldPeer.active ? { endedAt: oldPeer.lastSeen, endReason: 'leave' } : {}) });
     assert.match(ledger.peers[id].leaseId, UUID_PATTERN);
   }
   assert.equal(ledger.peers[inactiveId].active, false);
@@ -491,6 +534,16 @@ test('ledger versions and validators fail closed around migration boundaries', (
   assert.throws(() => p.migrateLedger({ ...current, peers: { [peerId]: { ...current.peers[peerId], suspended: undefined } } }, authorityId), /suspension|corrupt/i);
   assert.throws(() => p.migrateLedger({ ...current, peers: { [peerId]: { ...current.peers[peerId], leaseId: undefined } } }, authorityId), /lease|corrupt/i);
   assert.throws(() => p.migrateLedger({ ...current, peers: { [peerId]: { ...current.peers[peerId], active: false, suspended: true } } }, authorityId), /inactive|corrupt/i);
+  assert.throws(() => p.migrateLedger({ ...current, peers: { [peerId]: { ...current.peers[peerId], suspended: true } } }, authorityId), /suspens|corrupt/i);
+
+  const protocol = p.newLedger(authorityId); const protocolGroup = p.createGroup(protocol, 'protocol-validation');
+  const first = p.joinPeer(protocol, protocolGroup, { sessionId: 'first', displayName: 'First' });
+  const second = p.joinPeer(protocol, protocolGroup, { sessionId: 'second', displayName: 'Second' }); p.arm(protocol, protocolGroup, 2);
+  const request = p.prepareMessage(protocol, p.leaseOf(first), { kind: 'request', toPeerId: second.id, text: 'review' }, 'protocol-request');
+  const missingConversation = structuredClone(protocol); delete missingConversation.messages[request.id].conversationState;
+  assert.throws(() => p.migrateLedger(missingConversation, authorityId), /conversation|message|route|corrupt/i);
+  const malformedRoute = structuredClone(protocol); malformedRoute.routes[p.routeKey(second.id, first.id)].requestMessageId = randomUUID();
+  assert.throws(() => p.migrateLedger(malformedRoute, authorityId), /route|request|corrupt/i);
 
   const tooManyGroups = Object.fromEntries(Array.from({ length: 33 }, (_, index) => {
     const id = randomUUID();

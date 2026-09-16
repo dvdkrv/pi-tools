@@ -49,7 +49,7 @@ test('lost CAS acknowledgment consumes credit but returns no reservation or auto
   t.after(async () => { for (const socket of sockets) socket.destroy(); await new Promise(r => proxy.close(r)); });
   const receiver = await connectBackend({ ...f.config, server: `nats://127.0.0.1:${proxy.address().port}` }); t.after(() => receiver.close());
   await receiver.join(f.g, { sessionId: 'proxied', displayName: 'Proxied' });
-  await f.a.arm(f.g, 2); await f.a.send({ toPeerId: receiver.peer.id, text: 'uncertain' }, 'lost-ack');
+  await f.a.arm(f.g, 2); await f.a.send({ kind: 'notice', toPeerId: receiver.peer.id, text: 'uncertain' }, 'lost-ack');
   drop = true;
   await assert.rejects(receiver.reserve(), /uncertain/i); assert.equal(dropped, true);
   assert.equal((await f.a.getGroupSummary(f.g)).used, 1);
@@ -60,7 +60,7 @@ test('lost CAS acknowledgment consumes credit but returns no reservation or auto
 
 test('broker replay of an observed message is consumed without a second Pi reservation', async t => {
   const f = await fixture(t); if (!f) return;
-  const input = { toPeerId: f.b.peer.id, text: 'once' };
+  const input = { kind: 'notice', toPeerId: f.b.peer.id, text: 'once' };
   await f.jsm.streams.update('PM_MESSAGES', { duplicate_window: 100_000_000 });
   await f.a.arm(f.g, 3);
   await Promise.all(Array.from({ length: 5 }, () => f.a.send(input, 'same')));
@@ -82,7 +82,7 @@ test('a body published after the reservation high-water waits for the next batch
   const publicationStarted = deferred(); const releasePublication = deferred();
   const publish = f.a.js.publish.bind(f.a.js);
   f.a.js.publish = async (...args) => { publicationStarted.resolve(); await releasePublication.promise; return publish(...args); };
-  const sending = f.a.send({ toPeerId: f.b.peer.id, text: 'after boundary' }, 'after-boundary');
+  const sending = f.a.send({ kind: 'notice', toPeerId: f.b.peer.id, text: 'after boundary' }, 'after-boundary');
   await publicationStarted.promise;
   const streamInfo = f.b.jsm.streams.info.bind(f.b.jsm.streams); let highWaterReads = 0;
   f.b.jsm.streams.info = async name => { if (name === 'PM_MESSAGES') highWaterReads++; return streamInfo(name); };
@@ -112,7 +112,7 @@ test('a body published after the reservation high-water waits for the next batch
 test('a pre-boundary body without ledger metadata is acknowledged as stale', async t => {
   const f = await fixture(t); if (!f) return;
   await f.a.arm(f.g, 1);
-  const message = await f.a.send({ toPeerId: f.b.peer.id, text: 'orphan' }, 'orphan');
+  const message = await f.a.send({ kind: 'notice', toPeerId: f.b.peer.id, text: 'orphan' }, 'orphan');
   const { state, revision } = await f.b.snapshot(); delete state.messages[message.id];
   await f.b.kv.update('state', JSON.stringify(state), revision);
   assert.deepEqual(await f.b.reserve(), []);
@@ -122,7 +122,7 @@ test('a pre-boundary body without ledger metadata is acknowledged as stale', asy
 
 test('a pause committed before the admission CAS prevents the whole batch', { timeout: 10000 }, async t => {
   const f = await fixture(t); if (!f) return;
-  await f.a.arm(f.g, 1); await f.a.send({ toPeerId: f.b.peer.id, text: 'wait' }, 'paused');
+  await f.a.arm(f.g, 1); await f.a.send({ kind: 'notice', toPeerId: f.b.peer.id, text: 'wait' }, 'paused');
   const snapshot = f.b.snapshot.bind(f.b); let reads = 0; let release; let blocked;
   const waiting = new Promise(resolve => { release = resolve; }); const reached = new Promise(resolve => { blocked = resolve; });
   f.b.snapshot = async () => { const value = await snapshot(); if (++reads === 2) { blocked(); await waiting; } return value; };
@@ -153,7 +153,7 @@ test('rotated lease fences every old process mutation without deactivating the r
   assert.equal(initialized.ok, true); const old = initialized.value;
   assert.equal(Object.hasOwn(old, 'leaseId'), false);
   await f.a.arm(f.g, 2);
-  const attempted = await f.a.send({ toPeerId: old.id, text: 'attempted before rotation' }, 'before-rotation');
+  const attempted = await f.a.send({ kind: 'notice', toPeerId: old.id, text: 'attempted before rotation' }, 'before-rotation');
   assert.deepEqual((await contenderRequest(child, { action: 'reserve' })).value.messageIds, [attempted.id]);
 
   const kv = await new Kvm(f.nc).open('PM_CONTROL'); const entry = await kv.get('state'); const state = entry.json();
@@ -183,7 +183,7 @@ test('held batch pull under a rotated lease is not acknowledged and redelivers i
   await f.a.arm(f.g, 3);
   const sent = [];
   for (let index = 0; index < senders.length; index++) {
-    sent.push(await senders[index].send({ toPeerId: f.b.peer.id, text: `held-${index}` }, `held-${index}`));
+    sent.push(await senders[index].send({ kind: 'notice', toPeerId: f.b.peer.id, text: `held-${index}` }, `held-${index}`));
   }
 
   const originalSnapshot = f.b.snapshot.bind(f.b); let reads = 0;
@@ -216,7 +216,10 @@ test('held batch pull under a rotated lease is not acknowledged and redelivers i
 test('prune reclaims a durable consumer orphaned after leave metadata committed', async t => {
   const f = await fixture(t); if (!f) return;
   const kv = await new Kvm(f.nc).open('PM_CONTROL'); const entry = await kv.get('state'); const state = entry.json();
-  state.peers[f.b.peer.id].active = false; await kv.update('state', JSON.stringify(state), entry.revision);
+  state.peers[f.b.peer.id].active = false; state.peers[f.b.peer.id].suspended = false;
+  state.peers[f.b.peer.id].endedAt = Date.now(); state.peers[f.b.peer.id].endReason = 'leave';
+  state.routes = Object.fromEntries(Object.entries(state.routes).filter(([, route]) => route.fromPeerId !== f.b.peer.id && route.toPeerId !== f.b.peer.id));
+  await kv.update('state', JSON.stringify(state), entry.revision);
   assert.equal((await f.jsm.streams.info('PM_MESSAGES')).state.consumer_count, 2);
   await f.a.prune(f.g, true);
   assert.equal((await f.jsm.streams.info('PM_MESSAGES')).state.consumer_count, 1);
@@ -225,14 +228,14 @@ test('prune reclaims a durable consumer orphaned after leave metadata committed'
 test('send maintenance removes old terminal inactive-sender history without removing pending work or credits', async t => {
   const f = await fixture(t); if (!f) return;
   await f.a.arm(f.g, 2);
-  const terminal = await f.a.send({ toPeerId: f.b.peer.id, text: 'old' }, 'old');
+  const terminal = await f.a.send({ kind: 'notice', toPeerId: f.b.peer.id, text: 'old' }, 'old');
   await f.a.resolveMessage(f.g, terminal.id, 'canceled');
-  const pending = await f.a.send({ toPeerId: f.b.peer.id, text: 'retain' }, 'pending');
+  const pending = await f.a.send({ kind: 'notice', toPeerId: f.b.peer.id, text: 'retain' }, 'pending');
   await f.a.leave();
   const kv = await new Kvm(f.nc).open('PM_CONTROL'); const entry = await kv.get('state'); const state = entry.json();
   state.messages[terminal.id].terminalAt = Date.now() - 8 * 86400000; await kv.update('state', JSON.stringify(state), entry.revision);
   await f.a.join(f.g, { sessionId: 'fresh', displayName: 'Fresh' });
-  await f.b.send({ toPeerId: f.a.peer.id, text: 'new' }, 'maintenance');
+  await f.b.send({ kind: 'notice', toPeerId: f.a.peer.id, text: 'new' }, 'maintenance');
   const all = await f.b.listMessages(f.g);
   assert.equal(all.some(m => m.id === terminal.id), false);
   assert.equal(all.some(m => m.id === pending.id), true);

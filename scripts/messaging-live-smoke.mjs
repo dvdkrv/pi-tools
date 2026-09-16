@@ -92,7 +92,7 @@ try {
   assert.equal(timedOut, false);
   assert.equal(messages?.length, 2, 'PING and PONG are the only accepted messages');
   assert.ok(messages.every(m => m.state === 'observed'));
-  await assert.rejects(backends[0].send({ toPeerId: bob.id, text: 'FOLLOWUP' }, 'capacity-rejection'), /allowance/i);
+  await assert.rejects(backends[0].send({ kind: 'notice', toPeerId: bob.id, text: 'FOLLOWUP' }, 'capacity-rejection'), /allowance/i);
   assert.equal((await observer.getGroupSummary(group)).used, 2);
   assert.equal(receipts.length, 2);
   assert.deepEqual(receipts.map(r => r.session).sort(), ['A', 'B']);
