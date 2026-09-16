@@ -240,6 +240,18 @@ test('lease rotation fences every old participant mutation after suspended recip
   assert.deepEqual(senderLease, lease(f.a));
 });
 
+test('human-confirmed takeover preserves a stale member id and fences its old session lease', () => {
+  const f = fixture(); const oldLease = lease(f.b);
+  f.b.lastSeen = 1_000;
+  const taken = p.takeoverPeer(f.state, f.group, 'replacement-session', f.b.id, 40_001);
+  assert.equal(taken.id, f.b.id);
+  assert.equal(taken.sessionId, 'replacement-session');
+  assert.equal(taken.displayName, 'Bob');
+  assert.notEqual(taken.leaseId, oldLease.leaseId);
+  assert.throws(() => p.heartbeat(f.state, oldLease), /lease|participation/i);
+  assert.equal(f.state.routes[p.routeKey(f.a.id, f.b.id)].mode, 'open');
+});
+
 test('resume validates lifecycle attribution and serializes concurrent logical resumers', () => {
   const state = p.newLedger(randomUUID()); const group = p.createGroup(state, 'resume');
   const otherGroup = p.createGroup(state, 'resume-other');
@@ -386,9 +398,10 @@ test('v1 ledger migration preserves every authoritative field and adds private l
 
   const { ledger, migrated } = p.migrateLedger(v1, authorityId);
   assert.equal(migrated, true);
-  assert.equal(ledger.version, 2);
+  assert.equal(ledger.version, 3);
   assert.deepEqual(ledger.groups, before.groups);
-  assert.deepEqual(ledger.messages, before.messages);
+  assert.deepEqual(ledger.messages, Object.fromEntries(Object.entries(before.messages).map(([id, message]) => [id, { ...message, kind: 'legacy' }])));
+  assert.deepEqual(Object.keys(ledger.routes).sort(), [p.routeKey(activeRecipientId, activeSenderId), p.routeKey(activeSenderId, activeRecipientId)].sort());
   assert.equal(ledger.sequence, before.sequence);
   for (const [id, oldPeer] of Object.entries(before.peers)) {
     assert.deepEqual(p.publicPeer(ledger.peers[id]), { ...oldPeer, suspended: false });
@@ -410,9 +423,9 @@ test('ledger versions and validators fail closed around migration boundaries', (
     messages: {},
   };
   const current = p.migrateLedger(literalV1, authorityId).ledger;
-  assert.equal(p.newLedger(authorityId).version, 2);
+  assert.equal(p.newLedger(authorityId).version, 3);
   assert.throws(() => p.migrateLedger(literalV1, randomUUID()), /authority/i);
-  for (const version of [0, 3, 900]) assert.throws(() => p.migrateLedger({ ...literalV1, version }, authorityId), /unsupported|corrupt/i);
+  for (const version of [0, 3, 900]) assert.throws(() => p.migrateLedger({ ...literalV1, version }, authorityId), /unsupported|corrupt|route/i);
   assert.throws(() => p.migrateLedger({ ...literalV1, peers: [] }, authorityId), /corrupt/i);
   assert.throws(() => p.migrateLedger({ ...current, messages: [] }, authorityId), /corrupt/i);
   assert.throws(() => p.migrateLedger({ ...current, peers: { [peerId]: { ...current.peers[peerId], suspended: undefined } } }, authorityId), /suspension|corrupt/i);
@@ -449,6 +462,28 @@ test('peer presence distinguishes online, stale, suspended, and left peers', () 
   assert.equal(p.peerPresence({ ...peer, lastSeen: 69_999 }, 100_000), 'stale');
   assert.equal(p.peerPresence({ ...peer, suspended: true }, 100_000), 'suspended');
   assert.equal(p.peerPresence({ ...peer, active: false, suspended: false }, 100_000), 'left');
+});
+
+test('v3 ledger gives current member pairs open directional routes and migrates old messages as legacy', () => {
+  const authorityId = randomUUID();
+  const state = p.newLedger(authorityId);
+  assert.equal(state.version, 3);
+  const group = p.createGroup(state, 'protocol');
+  const a = p.joinPeer(state, group, { sessionId: 'a', displayName: 'A' }, 100);
+  const b = p.joinPeer(state, group, { sessionId: 'b', displayName: 'B' }, 101);
+  assert.equal(state.routes[p.routeKey(a.id, b.id)].mode, 'open');
+  assert.equal(state.routes[p.routeKey(b.id, a.id)].mode, 'open');
+
+  const current = structuredClone(state);
+  const v2 = { ...current, version: 2 };
+  delete v2.routes;
+  for (const peer of Object.values(v2.peers)) {
+    delete peer.suspendedAt; delete peer.endedAt; delete peer.endReason;
+  }
+  const migrated = p.migrateLedger(v2, authorityId, 1_000);
+  assert.equal(migrated.migrated, true);
+  assert.equal(migrated.ledger.version, 3);
+  assert.equal(migrated.ledger.routes[p.routeKey(a.id, b.id)].mode, 'open');
 });
 
 test('summaries omit bodies and authority mismatch or invalid state fails closed', () => {

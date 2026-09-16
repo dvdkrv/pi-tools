@@ -1,13 +1,18 @@
-export type MessageState = 'queued' | 'attempted' | 'observed' | 'canceled' | 'dismissed';
+export type MessageKind = 'legacy' | 'notice' | 'request' | 'reply';
+export type MessageState = 'queued' | 'attempted' | 'observed' | 'canceled' | 'dismissed' | 'expired' | 'terminal-unresolved';
+export type ConversationState = 'pending-delivery' | 'awaiting-reply' | 'reply-pending' | 'answered' | 'unanswered';
+export type RouteMode = 'open' | 'closed' | 'reply-only';
+export interface Route { groupId: string; fromPeerId: string; toPeerId: string; mode: RouteMode; requestMessageId?: string; observedAt?: number; expiresAt?: number }
 export interface GroupRef { authorityId: string; id: string; label: string }
 export interface Group extends GroupRef { mode: 'paused' | 'armed' | 'exhausted'; round: number; limit: number; used: number }
 export type PeerPresence = 'online' | 'stale' | 'suspended' | 'left';
-export interface Peer { id: string; groupId: string; sessionId: string; displayName: string; active: boolean; suspended: boolean; lastSeen: number }
+export interface Peer { id: string; groupId: string; sessionId: string; displayName: string; active: boolean; suspended: boolean; lastSeen: number; suspendedAt?: number; endedAt?: number; endReason?: 'leave' | 'revoke' | 'expired' }
 export interface ParticipantLease { readonly peerId: string; readonly leaseId: string }
 export interface StoredPeer extends Peer { leaseId: string }
 export interface MessageStatus {
   id: string; sequence: number; groupId: string; senderPeerId: string; recipientPeerId: string;
-  senderName: string; requestKey: string; hash: string; createdAt: number; state: MessageState;
+  senderName: string; requestKey: string; hash: string; createdAt: number; kind: MessageKind; state: MessageState;
+  conversationState?: ConversationState; conversationTerminalAt?: number; replyMessageId?: string;
   inReplyTo?: string; attemptId?: string; attemptRound?: number; attemptedAt?: number; observedAt?: number; terminalAt?: number;
 }
 export interface Envelope {

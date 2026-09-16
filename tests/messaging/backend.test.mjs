@@ -48,17 +48,19 @@ test('migrates v1 ledger once before backend exposure without losing initialized
   const upgraded = await connectBackend(f.config); t.after(() => upgraded.close());
   const after = await kv.get('state'); const current = after.json();
   assert.equal(after.revision, before.revision + 1, 'migration must commit exactly one KV revision');
-  assert.equal(current.version, 2);
+  assert.equal(current.version, 3);
+  const { routes, ...withoutRoutes } = current;
   const projection = {
-    ...current, version: 1,
+    ...withoutRoutes, version: 1,
     peers: Object.fromEntries(Object.entries(current.peers).map(([id, { suspended, leaseId, ...peer }]) => [id, peer])),
+    messages: Object.fromEntries(Object.entries(current.messages).map(([id, { kind, ...message }]) => [id, message])),
   };
   assert.equal(JSON.stringify(projection), JSON.stringify(legacy), 'all v1 JSON fields and ordering must survive migration');
   assert.ok(Object.values(current.peers).every(peer => peer.suspended === false && /^[0-9a-f-]{36}$/.test(peer.leaseId)));
   await upgraded.close();
 
   const reconnected = await connectBackend(f.config); t.after(() => reconnected.close());
-  assert.equal((await kv.get('state')).revision, after.revision, 'v2 reconnect must not write another migration revision');
+  assert.equal((await kv.get('state')).revision, after.revision, 'v3 reconnect must not write another migration revision');
 });
 
 test('resumes a preserved durable inbox as one ordered three-message batch', async t => {
