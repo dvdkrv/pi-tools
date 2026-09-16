@@ -116,7 +116,12 @@ test('a pre-boundary body without ledger metadata is acknowledged as stale', asy
   const { state, revision } = await f.b.snapshot(); delete state.messages[message.id];
   await f.b.kv.update('state', JSON.stringify(state), revision);
   assert.deepEqual(await f.b.reserve(), []);
-  const info = await f.jsm.consumers.info('PM_MESSAGES', consumerName(f.b.peer.id));
+  const deadline = Date.now() + 2_000; let info;
+  do {
+    info = await f.jsm.consumers.info('PM_MESSAGES', consumerName(f.b.peer.id));
+    if (info.ack_floor.stream_seq > 0) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  } while (Date.now() < deadline);
   assert.ok(info.ack_floor.stream_seq > 0, 'stale body must not be NAKed forever');
 });
 
