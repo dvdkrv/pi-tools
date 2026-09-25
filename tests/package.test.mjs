@@ -15,7 +15,7 @@ const extensions = [
 
 test('root manifest exposes one Pi package', () => {
   assert.equal(pkg.name, 'pi-tools');
-  assert.equal(pkg.version, '0.2.0');
+  assert.equal(pkg.version, '0.2.1');
   assert.equal(pkg.private, true);
   assert.equal(pkg.license, 'MIT');
   assert.deepEqual(pkg.pi?.extensions, extensions);
