@@ -9,6 +9,7 @@ const extensions = [
   './extensions/messaging.ts',
   './extensions/task.ts',
   './extensions/theme-sync.ts',
+  './extensions/work.ts',
   './extensions/worktree-manager.ts',
 ];
 
