@@ -54,6 +54,8 @@ export type CandidatePatch = {
 export const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const RESOLVED_STATES: readonly CandidateState[] = ["accepted", "merged", "dismissed", "withdrawn"];
+const TABLES = ["project", "item", "link", "signal", "candidate", "dismissal", "plan", "event", "connector_run", "meta"] as const;
+const REPLACE_TABLES: readonly string[] = ["project", "connector_run", "meta"];
 
 export function itemId(num: number): string {
 	return `W-${num}`;
@@ -642,5 +644,37 @@ export class WorkStore {
 
 	setMeta(key: string, value: string): void {
 		this.run("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", key, value);
+	}
+
+	// Backup support
+
+	dumpTables(): Record<string, Record<string, unknown>[]> {
+		const out: Record<string, Record<string, unknown>[]> = {};
+		for (const table of TABLES) out[table] = this.all(`SELECT * FROM ${table}`).map((row) => ({ ...row }));
+		return out;
+	}
+
+	isEmpty(): boolean {
+		for (const table of ["item", "link", "candidate", "plan", "dismissal"]) {
+			if (Number((this.one(`SELECT COUNT(*) AS n FROM ${table}`) as Row).n) > 0) return false;
+		}
+		return true;
+	}
+
+	loadTables(rows: { table: string; row: Record<string, unknown> }[]): void {
+		this.transaction(() => {
+			for (const table of TABLES) {
+				for (const entry of rows) {
+					if (entry.table !== table) continue;
+					const data: Record<string, unknown> = { ...entry.row };
+					if (table === "event") delete data.id;
+					const columns = Object.keys(data);
+					if (!columns.every((column) => /^[a-z_]+$/.test(column))) throw new WorkStoreError(`Invalid column in backup for ${table}`);
+					const verb = REPLACE_TABLES.includes(table) ? "INSERT OR REPLACE" : "INSERT";
+					this.run(`${verb} INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`, ...columns.map((column) => data[column] as Param));
+				}
+			}
+			this.event("user", "store", "import", { rows: rows.length });
+		});
 	}
 }

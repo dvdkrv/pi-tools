@@ -3,6 +3,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { WorkConfig } from "./config.ts";
 import { defaultConfigPath, defaultDataDir, loadWorkConfig } from "./config.ts";
+import type { GhRunner } from "./connectors/github.ts";
+import { defaultGhRunner } from "./connectors/github.ts";
+import { JiraClient } from "./connectors/jira.ts";
+import { commandSecretReader } from "./secrets.ts";
 import { WorkStore } from "./store.ts";
 
 export type Runtime = {
@@ -10,6 +14,9 @@ export type Runtime = {
 	config: WorkConfig;
 	warnings: string[];
 	dataDir: string;
+	backupDir: string;
+	jira?: JiraClient;
+	gh?: GhRunner;
 	knownProjects(): Set<string>;
 };
 
@@ -29,5 +36,17 @@ export function openRuntime(options: RuntimeOptions = {}): Runtime {
 	const store = WorkStore.open(join(dataDir, "work.db"), { now: options.now });
 	chmodSync(dataDir, 0o700);
 	applyConfigProjects(store, config);
-	return { store, config, warnings, dataDir, knownProjects: () => new Set(store.listProjects().map((project) => project.slug)) };
+	const jira = config.jira
+		? new JiraClient(config.jira, { fetch: (url, init) => fetch(url, init), readSecret: commandSecretReader })
+		: undefined;
+	return {
+		store,
+		config,
+		warnings,
+		dataDir,
+		backupDir: join(dataDir, "backups"),
+		jira,
+		gh: config.github.accounts.length > 0 ? defaultGhRunner : undefined,
+		knownProjects: () => new Set(store.listProjects().map((project) => project.slug)),
+	};
 }

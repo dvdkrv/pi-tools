@@ -1,7 +1,9 @@
+import { exportJsonl, importJsonl, writeRotatingBackup } from "./backup.ts";
 import { captureItem, resolveDue } from "./capture.ts";
 import { repoFromCwd as defaultRepoFromCwd } from "./rules.ts";
 import type { Runtime } from "./runtime.ts";
 import type { ItemPatch } from "./store.ts";
+import { formatSyncReport, syncAll } from "./sync.ts";
 import type { Item, ItemStatus, WaitingOn } from "./types.ts";
 import { ITEM_STATUSES, WAITING_ON } from "./types.ts";
 
@@ -199,7 +201,40 @@ const project: CliCommand = {
 	},
 };
 
-export const COMMANDS: Record<string, CliCommand> = { add, list, show, set, project };
+const sync: CliCommand = {
+	usage: "sync [--force]                       Sync Jira and GitHub into triage",
+	async run(args, deps) {
+		const rt = deps.runtime();
+		for (const warning of rt.warnings) deps.io.err(warning);
+		const report = await syncAll(rt.store, rt.config, { jira: rt.jira, gh: rt.gh, backupDir: rt.backupDir }, { force: args.includes("--force") });
+		deps.io.out(formatSyncReport(report));
+		return 0;
+	},
+};
+
+const exportCommand: CliCommand = {
+	usage: "export [path]                        Write a JSON Lines backup",
+	async run(args, deps) {
+		const rt = deps.runtime();
+		const path = args[0] ?? writeRotatingBackup(rt.store, rt.backupDir, rt.store.clock());
+		if (args[0]) exportJsonl(rt.store, path);
+		deps.io.out(`Exported to ${path}`);
+		return 0;
+	},
+};
+
+const importCommand: CliCommand = {
+	usage: "import <path>                        Restore a backup into an empty database",
+	async run(args, deps) {
+		if (!args[0]) throw new UsageError("Usage: work import <path>");
+		const rt = deps.runtime();
+		const rows = importJsonl(rt.store, args[0]);
+		deps.io.out(`Imported ${rows} rows from ${args[0]}`);
+		return 0;
+	},
+};
+
+export const COMMANDS: Record<string, CliCommand> = { add, list, show, set, project, sync, export: exportCommand, import: importCommand };
 
 export function usage(): string {
 	return ["Usage: work <command>", ...Object.values(COMMANDS).map((command) => `  ${command.usage}`)].join("\n");
