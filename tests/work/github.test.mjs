@@ -29,7 +29,7 @@ function fakeGh(handlers) {
 test('review requests are shallow, and authored and linked PRs are detailed', async () => {
   const { run, calls } = fakeGh([
     ['auth token --user work-account', 'gho_TOKEN\n'],
-    ['--review-requested=@me', [{ url: 'https://github.com/example-org/api/pull/1', title: 'Add thing', number: 1, repository: { nameWithOwner: 'example-org/api' } }]],
+    ['user-review-requested:@me', [{ url: 'https://github.com/example-org/api/pull/1', title: 'Add thing', number: 1, repository: { nameWithOwner: 'example-org/api' } }]],
     ['--author=@me', [{ url: 'https://github.com/example-org/api/pull/2', title: 'Mine', number: 2, repository: { nameWithOwner: 'example-org/api' } }]],
     ['pr view 2 --repo example-org/api', view(2)],
     ['pr view 3 --repo example-org/api', view(3, { state: 'MERGED' })],
@@ -49,6 +49,9 @@ test('review requests are shallow, and authored and linked PRs are detailed', as
   assert.deepEqual(linked.observations.map((o) => o.key), ['github:pr:example-org/api#3']);
   assert.ok(calls.slice(1).every((c) => c.env.GH_TOKEN === 'gho_TOKEN'));
   assert.equal(calls.filter((c) => c.args.join(' ').includes('pr view 2')).length, 1);
+  const reviewCall = calls.find((c) => c.args.includes('user-review-requested:@me'));
+  assert.deepEqual(reviewCall.args.slice(0, 3), ['search', 'prs', 'user-review-requested:@me']);
+  assert.ok(calls.every((c) => !c.args.includes('--review-requested=@me')), 'team review requests must not be queried');
 });
 
 test('token failures mark every query of that account as failed', async () => {
@@ -62,7 +65,7 @@ test('search results at the limit are incomplete, and failures are isolated per 
   const many = Array.from({ length: 100 }, (_, i) => ({ url: `u${i}`, title: 't', number: i + 1, repository: { nameWithOwner: 'example-org/api' } }));
   const { run } = fakeGh([
     ['auth token', 'gho_TOKEN'],
-    ['--review-requested=@me', many],
+    ['user-review-requested:@me', many],
     ['--author=@me', new Error('HTTP 502: could not resolve host')],
   ]);
   const [review, authored] = await fetchGithub(accounts, run, [], new Date());

@@ -73,6 +73,7 @@ type PrView = {
 const SEARCH_LIMIT = 100;
 const SEARCH_FIELDS = "url,title,number,repository";
 const VIEW_FIELDS = "url,title,number,state,headRefName,reviewDecision,reviews,comments,statusCheckRollup";
+// Review requests are direct only: team requests (for example via CODEOWNERS) are a shared queue, not personal work.
 const QUERIES = ["review-requested", "authored", "linked-prs"] as const;
 
 function asGhError(error: unknown, secrets: readonly string[] = []): GhError {
@@ -147,7 +148,7 @@ export async function fetchGithub(accounts: GithubAccount[], run: GhRunner, link
 		for (const org of account.orgs) {
 			const covered = new Set<string>();
 			try {
-				const prs = JSON.parse(await gh(["search", "prs", "--review-requested=@me", "--state=open", "--owner", org, "--json", SEARCH_FIELDS, "--limit", String(SEARCH_LIMIT)])) as SearchPr[];
+				const prs = JSON.parse(await gh(["search", "prs", "user-review-requested:@me", "--state=open", "--owner", org, "--json", SEARCH_FIELDS, "--limit", String(SEARCH_LIMIT)])) as SearchPr[];
 				results.push({ connector: "github", query: `review-requested:${org}`, complete: prs.length < SEARCH_LIMIT, status: "ok", observations: prs.map((pr) => shallowObservation(pr, at)) });
 			} catch (error) {
 				results.push(failure(`review-requested:${org}`, asGhError(error, [token])));

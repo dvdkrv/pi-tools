@@ -215,7 +215,7 @@ The API secret is obtained by running the configured command at call time. It is
 
 **GitHub** uses `gh`, with the configured account's token obtained per call (`gh auth token --user <user>`) and passed as `GH_TOKEN` to that one invocation. The global `gh` login is never switched. It collects:
 
-- open PRs where the user's review is requested
+- open PRs where the user's review is requested directly (`user-review-requested:@me`). Requests made to the user's teams, for example through CODEOWNERS, are excluded. They form a shared queue that can run to hundreds of PRs.
 - the user's own open PRs: reviews and comments since the previous observation, check conclusion, and merged or closed state
 - the state of every PR linked to an active item
 

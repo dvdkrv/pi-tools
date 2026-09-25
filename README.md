@@ -52,7 +52,7 @@ A local work tracker for one person: one list of projects and items, a triage in
 
 - `/todo <text> [#project] [due:<date>]` captures an item instantly. The project comes from `#project` or from rules for the current repository.
 - `work_propose` lets agents propose follow-ups. Proposals only enter the triage inbox, with at most five pending per session.
-- `/triage` reviews candidates from Jira, GitHub, and agents: accept, merge, dismiss, snooze, bulk accept, or accept and promote to Jira.
+- `/triage` reviews candidates from Jira (tickets assigned to you), GitHub (direct review requests and your own PRs; team review requests are excluded), and agents: accept, merge, dismiss, snooze, bulk accept, or accept and promote to Jira.
 - `/today` syncs, triages, and opens a `today` tmux window running a fresh `plan-YYYY-MM-DD` Pi session with read-only snapshot tools and local-only update tools.
 
 The same features are available from the shell through `bin/work.ts` (`add`, `list`, `show`, `set`, `project`, `sync`, `triage`, `today`, `promote`, `undismiss`, `recap`, `export`, `import`). For example, use `alias work='node <package>/bin/work.ts'` and `alias todo='work add'`.
