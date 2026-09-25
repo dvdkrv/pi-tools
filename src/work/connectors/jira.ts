@@ -1,7 +1,9 @@
 import type { JiraConfig } from "../config.ts";
 import type { SecretReader } from "../secrets.ts";
 import { errorMessage, redact } from "../secrets.ts";
+import type { WorkStore } from "../store.ts";
 import type { ConnectorResult, ConnectorStatus, Observation } from "../types.ts";
+import type { Actor, Link } from "../types.ts";
 
 export type HttpResponse = { status: number; text(): Promise<string> };
 export type HttpFetch = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => Promise<HttpResponse>;
@@ -98,6 +100,23 @@ export class JiraClient {
 		}
 		return { issues, complete: false };
 	}
+
+	async createIssue(fields: Record<string, unknown>): Promise<string> {
+		const created = (await this.request("POST", "/rest/api/3/issue", { fields })) as { key?: string } | undefined;
+		if (!created?.key) throw new JiraError("Jira create returned no key", "error");
+		return created.key;
+	}
+
+	async transitions(key: string): Promise<Transition[]> {
+		const result = (await this.request("GET", `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`)) as {
+			transitions?: { id: string; name: string; to?: { statusCategory?: { key?: string } } }[];
+		} | undefined;
+		return (result?.transitions ?? []).map((t) => ({ id: t.id, name: t.name, category: t.to?.statusCategory?.key ?? "unknown" }));
+	}
+
+	async transition(key: string, transitionId: string): Promise<void> {
+		await this.request("POST", `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, { transition: { id: transitionId } });
+	}
 }
 
 export function issueObservation(site: string, issue: JiraIssue, me: string, observedAt: string, reason: string): Observation {
@@ -175,4 +194,92 @@ export async function fetchJira(client: JiraClient, linkedKeys: string[], now: D
 		results.push(failure("linked-state", asJiraError(error)));
 	}
 	return results;
+}
+
+export type Transition = { id: string; name: string; category: string };
+export type PromotionPreview = { itemId: string; projectKey: string; issueType: string; summary: string; description: string; epic: string | null };
+
+export function promotionPreview(store: WorkStore, itemId: string, config: JiraConfig): PromotionPreview {
+	const item = store.getItem(itemId);
+	if (!item) throw new JiraError(`Unknown item: ${itemId}`, "error");
+	const links = store.listLinks(itemId);
+	if (links.some((link) => link.kind === "jira")) throw new JiraError(`${itemId} already has a Jira ticket`, "error");
+	const linkLines = links.map((link) => `- ${link.url ?? link.key}`);
+	const description = [item.notes.trim(), linkLines.length ? `Links:\n${linkLines.join("\n")}` : ""].filter(Boolean).join("\n\n");
+	return {
+		itemId,
+		projectKey: config.defaultProject,
+		issueType: config.defaultIssueType,
+		summary: item.title,
+		description,
+		epic: store.getProject(item.project)?.jiraEpic ?? null,
+	};
+}
+
+export function formatPreview(preview: PromotionPreview): string {
+	return [
+		`${preview.issueType} in ${preview.projectKey}${preview.epic ? ` under ${preview.epic}` : ""}, assigned to you`,
+		`Summary: ${preview.summary}`,
+		preview.description ? `Description:\n${preview.description}` : "Description: (empty)",
+	].join("\n");
+}
+
+export function adfDocument(text: string): Record<string, unknown> {
+	const paragraphs = text.split(/\n{2,}/).filter((paragraph) => paragraph.trim());
+	return {
+		type: "doc",
+		version: 1,
+		content: paragraphs.map((paragraph) => ({
+			type: "paragraph",
+			content: paragraph.split("\n").flatMap((line, index) => [
+				...(index > 0 ? [{ type: "hardBreak" }] : []),
+				...(line ? [{ type: "text", text: line }] : []),
+			]),
+		})),
+	};
+}
+
+export async function promoteItem(store: WorkStore, itemId: string, client: JiraClient, actor: Actor = "user"): Promise<Link> {
+	const preview = promotionPreview(store, itemId, client.config);
+	const accountId = await client.myAccountId();
+	const fields: Record<string, unknown> = {
+		project: { key: preview.projectKey },
+		issuetype: { name: preview.issueType },
+		summary: preview.summary,
+		description: adfDocument(preview.description || preview.summary),
+		assignee: { accountId },
+	};
+	if (preview.epic) fields.parent = { key: preview.epic };
+	const key = await client.createIssue(fields);
+	return store.addLink(itemId, { kind: "jira", key: `jira:${key}`, url: `${client.config.site}/browse/${key}`, state: null }, actor);
+}
+
+export function chooseTransition(transitions: Transition[], category: string): Transition | undefined {
+	const matches = transitions.filter((transition) => transition.category === category);
+	return matches.length === 1 ? matches[0] : undefined;
+}
+
+export async function applyJiraUpdate(
+	store: WorkStore,
+	candidateId: number,
+	client: JiraClient,
+	pick: (options: Transition[]) => Promise<Transition | undefined>,
+	actor: Actor = "user",
+): Promise<"applied" | "cancelled"> {
+	const candidate = store.getCandidate(candidateId);
+	if (!candidate || candidate.kind !== "jira-update" || (candidate.state !== "pending" && candidate.state !== "snoozed")) {
+		throw new JiraError(`Candidate ${candidateId} is not an open Jira update`, "error");
+	}
+	const ticket = String(candidate.payload.ticket);
+	const category = String(candidate.payload.targetCategory);
+	const transitions = await client.transitions(ticket);
+	const chosen = chooseTransition(transitions, category) ?? (await pick(transitions));
+	if (!chosen) return "cancelled";
+	await client.transition(ticket, chosen.id);
+	store.transaction(() => {
+		const link = store.findLinkByKey(`jira:${ticket}`);
+		if (link) store.updateLinkState(link.id, { ...(link.state ?? {}), category: chosen.category }, actor);
+		store.updateCandidate(candidate.id, { state: "accepted" }, actor);
+	});
+	return "applied";
 }

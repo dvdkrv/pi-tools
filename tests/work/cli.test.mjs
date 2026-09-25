@@ -82,3 +82,42 @@ test('bin/work.ts runs under Node type stripping with XDG paths', async () => {
   const { stdout } = await run(process.execPath, [bin, 'add', 'smoke', 'test'], { env, cwd: dir });
   assert.equal(stdout.trim(), 'W-1 added to misc');
 });
+
+test('triage walks candidates: accept keeps defaults, dismiss, then empty', async () => {
+  const rt = await memoryRuntime();
+  for (const n of [1, 2]) {
+    rt.store.addCandidate({ kind: 'new-item', source: 'github', dedupeKey: `k${n}`, title: `Review ${n}`, reason: 'Review requested', proposedProject: 'misc' }, 'sync:github');
+  }
+  const r = await cli(['triage'], { runtime: rt, answers: ['a', '', '', 'd'] });
+  assert.equal(r.code, 0);
+  assert.equal(rt.store.listItems()[0].title, 'Review 1');
+  assert.equal(rt.store.isDismissed('k2'), true);
+  assert.equal(r.out.at(-1), 'Triage inbox is empty');
+});
+
+test('promote previews, requires confirmation, and honors --yes', async () => {
+  const { JiraClient } = await load('src/work/connectors/jira.ts');
+  const posts = [];
+  const fetch = async (url, init) => {
+    if (init.method === 'POST') posts.push(url);
+    const body = url.endsWith('/myself') ? { accountId: 'me' } : { key: 'ABC-3' };
+    return { status: 200, text: async () => JSON.stringify(body) };
+  };
+  const jiraConfig = { site: 'https://example.atlassian.net', email: 'user@example.com', secretCommand: ['x'], defaultProject: 'ABC', defaultIssueType: 'Task' };
+  const rt = await memoryRuntime({ jira: new JiraClient(jiraConfig, { fetch, readSecret: async () => 'token-1234' }) });
+  rt.store.addItem({ project: 'misc', title: 'Promote me', origin: 'manual' }, 'user');
+  const no = await cli(['promote', 'W-1'], { runtime: rt, answers: ['n'] });
+  assert.match(no.out.join('\n'), /Summary: Promote me/);
+  assert.equal(posts.length, 0);
+  const yes = await cli(['promote', 'W-1', '--yes'], { runtime: rt });
+  assert.equal(yes.out.at(-1), 'Created ABC-3 for W-1');
+  assert.equal(posts.length, 1);
+});
+
+test('undismiss removes a dismissal', async () => {
+  const rt = await memoryRuntime();
+  rt.store.addDismissal('k', 'user');
+  const r = await cli(['undismiss', 'k'], { runtime: rt });
+  assert.equal(r.out[0], 'Removed dismissal for k');
+  assert.equal(rt.store.isDismissed('k'), false);
+});

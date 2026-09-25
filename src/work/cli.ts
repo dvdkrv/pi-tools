@@ -1,5 +1,6 @@
 import { exportJsonl, importJsonl, writeRotatingBackup } from "./backup.ts";
 import { captureItem, resolveDue } from "./capture.ts";
+import { cliPromote, runCliTriage } from "./cli-triage.ts";
 import { repoFromCwd as defaultRepoFromCwd } from "./rules.ts";
 import type { Runtime } from "./runtime.ts";
 import type { ItemPatch } from "./store.ts";
@@ -234,7 +235,36 @@ const importCommand: CliCommand = {
 	},
 };
 
-export const COMMANDS: Record<string, CliCommand> = { add, list, show, set, project, sync, export: exportCommand, import: importCommand };
+const triageCommand: CliCommand = {
+	usage: "triage                               Review the triage inbox",
+	async run(_args, deps) {
+		return runCliTriage(deps.runtime(), deps.io);
+	},
+};
+
+const promote: CliCommand = {
+	usage: "promote <W-n> [--yes]                Create a Jira ticket for an item",
+	async run(args, deps) {
+		const id = args.find((arg) => arg !== "--yes");
+		if (!id) throw new UsageError("Usage: work promote <W-n> [--yes]");
+		await cliPromote(deps.runtime(), deps.io, id, args.includes("--yes"));
+		return 0;
+	},
+};
+
+const undismiss: CliCommand = {
+	usage: "undismiss <key>                      Let a dismissed key return to triage",
+	async run(args, deps) {
+		if (!args[0]) throw new UsageError("Usage: work undismiss <key>");
+		const removed = deps.runtime().store.removeDismissal(args[0], "user");
+		deps.io.out(removed ? `Removed dismissal for ${args[0]}` : `No dismissal for ${args[0]}`);
+		return 0;
+	},
+};
+
+export const COMMANDS: Record<string, CliCommand> = {
+	add, list, show, set, project, sync, triage: triageCommand, promote, undismiss, export: exportCommand, import: importCommand,
+};
 
 export function usage(): string {
 	return ["Usage: work <command>", ...Object.values(COMMANDS).map((command) => `  ${command.usage}`)].join("\n");
