@@ -1,6 +1,7 @@
 import { exportJsonl, importJsonl, writeRotatingBackup } from "./backup.ts";
 import { captureItem, resolveDue } from "./capture.ts";
 import { cliPromote, runCliTriage } from "./cli-triage.ts";
+import { recapRange, renderRecap } from "./recap.ts";
 import { repoFromCwd as defaultRepoFromCwd } from "./rules.ts";
 import type { Runtime } from "./runtime.ts";
 import type { ItemPatch } from "./store.ts";
@@ -262,8 +263,20 @@ const undismiss: CliCommand = {
 	},
 };
 
+const recap: CliCommand = {
+	usage: "recap [today|yesterday|week]         Markdown recap for your daily note",
+	async run(args, deps) {
+		const which = (args[0] ?? "today") as "today" | "yesterday" | "week";
+		if (!["today", "yesterday", "week"].includes(which)) throw new UsageError("Usage: work recap [today|yesterday|week]");
+		const rt = deps.runtime();
+		const now = rt.store.clock();
+		deps.io.out(renderRecap(rt.store, recapRange(which, now), now));
+		return 0;
+	},
+};
+
 export const COMMANDS: Record<string, CliCommand> = {
-	add, list, show, set, project, sync, triage: triageCommand, promote, undismiss, export: exportCommand, import: importCommand,
+	add, list, show, set, project, sync, triage: triageCommand, promote, undismiss, recap, export: exportCommand, import: importCommand,
 };
 
 export function usage(): string {
