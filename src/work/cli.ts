@@ -1,16 +1,27 @@
 import { exportJsonl, importJsonl, writeRotatingBackup } from "./backup.ts";
 import { captureItem, resolveDue } from "./capture.ts";
 import { cliPromote, runCliTriage } from "./cli-triage.ts";
+import { expandHome } from "./config.ts";
+import type { TmuxRunner } from "./planner.ts";
+import { defaultTmux, launchPlanner } from "./planner.ts";
 import { recapRange, renderRecap } from "./recap.ts";
 import { repoFromCwd as defaultRepoFromCwd } from "./rules.ts";
 import type { Runtime } from "./runtime.ts";
 import type { ItemPatch } from "./store.ts";
 import { formatSyncReport, syncAll } from "./sync.ts";
+import { openCandidates } from "./triage.ts";
 import type { Item, ItemStatus, WaitingOn } from "./types.ts";
 import { ITEM_STATUSES, WAITING_ON } from "./types.ts";
 
 export type CliIo = { out(text: string): void; err(text: string): void; ask(question: string): Promise<string> };
-export type CliDeps = { runtime: () => Runtime; io: CliIo; cwd: string; env: NodeJS.ProcessEnv; repoFromCwd?: (cwd: string) => string | undefined };
+export type CliDeps = {
+	runtime: () => Runtime;
+	io: CliIo;
+	cwd: string;
+	env: NodeJS.ProcessEnv;
+	repoFromCwd?: (cwd: string) => string | undefined;
+	tmux?: TmuxRunner;
+};
 export type CliCommand = { usage: string; run: (args: string[], deps: CliDeps) => Promise<number> };
 
 export class UsageError extends Error {}
@@ -275,8 +286,22 @@ const recap: CliCommand = {
 	},
 };
 
+const today: CliCommand = {
+	usage: "today                                Sync, triage, and open today's planner",
+	async run(_args, deps) {
+		const rt = deps.runtime();
+		for (const warning of rt.warnings) deps.io.err(warning);
+		const report = await syncAll(rt.store, rt.config, { jira: rt.jira, gh: rt.gh, backupDir: rt.backupDir });
+		deps.io.out(formatSyncReport(report));
+		if (openCandidates(rt.store).length > 0) await runCliTriage(rt, deps.io);
+		const result = launchPlanner({ store: rt.store, cwd: expandHome(rt.config.plannerCwd ?? "~"), env: deps.env, tmux: deps.tmux ?? defaultTmux, now: rt.store.clock() });
+		deps.io.out(result.message);
+		return 0;
+	},
+};
+
 export const COMMANDS: Record<string, CliCommand> = {
-	add, list, show, set, project, sync, triage: triageCommand, promote, undismiss, recap, export: exportCommand, import: importCommand,
+	add, list, show, set, project, sync, triage: triageCommand, today, promote, undismiss, recap, export: exportCommand, import: importCommand,
 };
 
 export function usage(): string {

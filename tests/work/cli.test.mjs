@@ -121,3 +121,12 @@ test('undismiss removes a dismissal', async () => {
   assert.equal(r.out[0], 'Removed dismissal for k');
   assert.equal(rt.store.isDismissed('k'), false);
 });
+
+test('today syncs, then prints the planner command outside tmux', async () => {
+  const rt = await memoryRuntime();
+  const io = captureIo();
+  const code = await runCli(['today'], { runtime: () => rt, io: io.io, cwd: '/tmp', env: {}, repoFromCwd: () => undefined, tmux: () => { throw new Error('tmux must not run outside tmux'); } });
+  assert.equal(code, 0);
+  assert.match(io.out[0], /^synced: -/);
+  assert.match(io.out.at(-1), /PI_WORK_PLANNER=1 pi --session-id plan-/);
+});

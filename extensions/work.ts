@@ -1,11 +1,16 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { captureItem } from "../src/work/capture.ts";
+import { expandHome } from "../src/work/config.ts";
+import type { TmuxRunner } from "../src/work/planner.ts";
+import { defaultTmux, launchPlanner, PLANNER_ENV } from "../src/work/planner.ts";
+import { registerPlannerTools } from "../src/work/planner-tools.ts";
 import { proposeCandidate } from "../src/work/proposals.ts";
 import { repoFromCwd } from "../src/work/rules.ts";
 import type { Runtime } from "../src/work/runtime.ts";
 import { openRuntime } from "../src/work/runtime.ts";
 import { errorMessage } from "../src/work/secrets.ts";
+import { syncAll } from "../src/work/sync.ts";
 import { openCandidates } from "../src/work/triage.ts";
 import type { TriageUiContext } from "../src/work/triage-ui.ts";
 import { runTriageUi } from "../src/work/triage-ui.ts";
@@ -14,6 +19,7 @@ export type WorkExtensionOptions = {
 	runtime?: () => Runtime;
 	repoFromCwd?: (cwd: string) => string | undefined;
 	env?: NodeJS.ProcessEnv;
+	tmux?: TmuxRunner;
 };
 
 export const PROPOSE_DESCRIPTION = "Propose a follow-up for the user's work triage inbox. Use only for work outside your current task's scope, or for work you would otherwise leave as \"not done yet\" at the end of the session. Do not propose normal progress on your own task. The user reviews every proposal; this tool cannot create items, change status, or contact Jira.";
@@ -86,6 +92,26 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 				}
 				await runTriageUi(ctx as unknown as TriageUiContext, rt());
 				refreshBadge(ctx);
+			},
+		});
+
+		const env = options.env ?? process.env;
+		if (env[PLANNER_ENV] === "1") registerPlannerTools(pi, rt);
+
+		pi.registerCommand("today", {
+			description: "Sync, triage, then open today's planner session",
+			handler: async (_args, ctx) => {
+				try {
+					const r = rt();
+					const report = await syncAll(r.store, r.config, { jira: r.jira, gh: r.gh, backupDir: r.backupDir });
+					for (const warning of report.warnings) ctx.ui.notify(warning, "warning");
+					if (ctx.mode === "tui" && openCandidates(r.store).length > 0) await runTriageUi(ctx as unknown as TriageUiContext, r);
+					const result = launchPlanner({ store: r.store, cwd: expandHome(r.config.plannerCwd ?? "~"), env, tmux: options.tmux ?? defaultTmux, now: r.store.clock() });
+					ctx.ui.notify(result.message, "info");
+					refreshBadge(ctx);
+				} catch (error) {
+					ctx.ui.notify(errorMessage(error), "error");
+				}
 			},
 		});
 
