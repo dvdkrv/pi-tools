@@ -138,6 +138,7 @@ A meaningful change observed on a linked key: `pr-merged`, `pr-closed`, `review-
 | `id` | Integer primary key. |
 | `kind` | `new-item`, `attach-link`, or `jira-update`. |
 | `source` | `jira`, `github`, or `agent`. |
+| `query` | The connector query that produced it, such as `assigned-open` or `review-requested:<org>`. Null for agent and Jira-update candidates. Only a complete result from the same query can withdraw it. |
 | `dedupe_key` | Unique among pending candidates. |
 | `title`, `reason`, `evidence` | Text, stored and displayed as data. |
 | `proposed_project` | From the rules, or from the proposing agent. |
@@ -156,9 +157,17 @@ A durable set of dismissed dedupe keys (`key`, `dismissed_at`). Reconciliation n
 
 `date` (primary key), `item_ids` (an ordered JSON array for focus), `quick_actions` (a JSON array of text or item IDs), `notes`, and `saved_at`.
 
+### `connector_run`
+
+The latest outcome of each connector query: `connector`, `query`, `status` (`ok`, `auth-failed`, `unreachable`, or `error`), redacted `error`, `at`, and `last_ok_at`.
+
+### `meta`
+
+A small key-value table for operational state: sync cache timestamps, the last backup time, and whether today's planner session has started.
+
 ### `event`
 
-Append-only: `id`, `at`, `actor` (`user`, `agent:<session-id>`, `sync:<connector>`, or `planner`), `entity` (`item:W-42`, `candidate:17`, and so on), `action`, and `data` (JSON before and after, or detail). Events are never updated or deleted. Every mutation in `store.ts` writes its event in the same transaction.
+Append-only: `id`, `at`, `actor` (`user`, `agent:<session-id>`, `sync:<connector>`, or `planner`), `entity` (`item:W-42`, `candidate:17`, and so on), `action`, and `data` (JSON before and after, or detail). Events are never updated or deleted. Every domain mutation in `store.ts` (projects, items, links, signals, candidates, dismissals, plans) writes its event in the same transaction. A mutation that changes nothing writes no event. Refreshing an unchanged link's `state_at`, connector runs, and `meta` are operational and write no events.
 
 ## Configuration
 
@@ -182,6 +191,7 @@ Append-only: `id`, `at`, `actor` (`user`, `agent:<session-id>`, `sync:<connector
   "projects": [
     { "slug": "payments", "title": "Payments", "jiraEpic": "ABC-100", "notesPath": "~/notes/projects/payments" }
   ],
+  "planner": { "cwd": "~" },
   "rules": [
     { "repo": "payments-api", "project": "payments" },
     { "jiraEpic": "ABC-100", "project": "payments" },
@@ -209,6 +219,8 @@ The API secret is obtained by running the configured command at call time. It is
 - the user's own open PRs: reviews and comments since the previous observation, check conclusion, and merged or closed state
 - the state of every PR linked to an active item
 
+Search results are less detailed than `gh pr view`, so observations carry `detailed: true` or `detailed: false`. PR signals are computed only between two detailed states, and a less detailed observation never overwrites a detailed link state. Review requests are fetched by search. The user's own PRs and linked PRs are fetched in detail.
+
 **Reconciliation** takes a connector's complete result set and applies these rules:
 
 1. **Known key** (it matches `link.key`): update `state` and `state_at`. Compare with the previous state and record a `signal` for each meaningful change. If a linked PR merged while its item's linked Jira ticket is not in the Done category, create a `jira-update` candidate unless one is already pending for that ticket.
@@ -225,7 +237,8 @@ The API secret is obtained by running the configured command at call time. It is
 `/todo <text>` in Pi and `work add <text>` in the shell use one parser:
 
 - `#<slug>` sets the project. An unknown slug is refused, with a suggestion.
-- `due:<value>` accepts `YYYY-MM-DD`, `today`, `tomorrow`, or a weekday name, meaning its next occurrence.
+- `due:<value>` accepts `YYYY-MM-DD`, `today`, `tomorrow`, or a weekday name, meaning the nearest such day on or after today.
+- `#` followed by a letter is a project. Tokens such as `#42` stay in the title.
 - Each URL becomes a link, with its kind detected: tracker, PR, issue, chat, note, or URL. The URL is removed from the title only when the remaining text is non-empty.
 - Without `#`, the project comes from the rules using the current repository, falling back to `misc`.
 
@@ -256,7 +269,7 @@ The tool definition is static and registered once per session, so it doesn't dis
 
 ## Triage
 
-`/triage` and `work triage` open the same terminal view. `/today` opens it first whenever pending or due snoozed candidates exist.
+`/triage` opens the terminal view in Pi. `work triage` in a shell is a line-by-line prompt with the same actions and keys, plus `s` to skip and `q` to quit. `/today` opens it first whenever pending or due snoozed candidates exist.
 
 Each row shows source, kind, title, proposed project, and evidence. Keys:
 
@@ -280,9 +293,9 @@ Nothing expires automatically, except candidates withdrawn by reconciliation. Pi
 
 ### Session
 
-`/today` and `work today` open, or focus, a tmux window named `today`, running a Pi session with the fixed ID `plan-YYYY-MM-DD` and the display name `Plan YYYY-MM-DD`. Running it again the same day refocuses the existing window, or resumes the session if the window is gone. Each day starts a new session, so planning context never accumulates across days. Outside tmux, the command prints the `pi` invocation to run.
+`/today` and `work today` first run sync and, when candidates are waiting, triage in the invoking terminal. They then open, or focus, a tmux window named `today`, running a Pi session with the fixed ID `plan-YYYY-MM-DD` and the display name `Plan YYYY-MM-DD`. Running it again the same day refocuses the existing window, or resumes the session without resending the kickoff if the window is gone. The window is tagged with its date, so a leftover window from an earlier day is renamed `plan-<date>` rather than reused. The session runs in `planner.cwd`, which defaults to the home directory. Each day starts a new session, so planning context never accumulates across days. Outside tmux, the command prints the `pi` invocation to run.
 
-The planner session receives a fixed kickoff prompt and these tools:
+The planner session receives a fixed kickoff prompt and these tools. They are registered only when the environment variable `PI_WORK_PLANNER=1`, which the launch command sets:
 
 | Tool | Effect |
 | --- | --- |
@@ -295,13 +308,12 @@ The planner has no Jira or GitHub write tools.
 
 ### Flow
 
-1. Run sync (cached), and report connector warnings.
-2. Run triage if candidates are pending.
-3. The model calls `work_snapshot` and proposes:
+1. In the invoking terminal: run sync (cached), report connector warnings, and run triage if candidates are pending.
+2. In the planner session, the model calls `work_snapshot` and proposes:
    - **Focus:** 3 to 5 items, including every pinned item, each with a one-line reason that cites signals, waiting age, due dates, or yesterday's outcome.
    - **Quick actions:** reviews, replies, and pending Jira updates.
    - **Nudges:** items that have waited more than 7 days, `todo` items untouched for 14 days, and `doing` items with no event for 3 days. Each nudge offers decide, park, or drop.
-4. The user adjusts the plan in conversation. The model applies agreed changes with `work_update`, then calls `work_plan_save`.
+3. The user adjusts the plan in conversation. The model applies agreed changes with `work_update`, then calls `work_plan_save`.
 
 ### Snapshot contents
 
@@ -328,7 +340,7 @@ These are the only two paths that write to Jira. Both show a preview and require
 
 - The issue is created in `jira.defaultProject` with type `jira.defaultIssueType`.
 - The summary is the item title. The description is the notes plus a list of links.
-- The ticket is linked to the project's `jira_epic` when one is configured.
+- The ticket is assigned to the current user, and linked to the project's `jira_epic` when one is configured.
 - The new key is attached to the item as a `jira` link.
 - Promotion is idempotent: if the item already has a `jira` link, it is refused.
 
