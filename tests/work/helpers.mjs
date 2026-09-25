@@ -27,3 +27,37 @@ export async function memoryStore(now = clock()) {
   const { WorkStore } = await load('src/work/store.ts');
   return WorkStore.open(':memory:', { now });
 }
+
+export async function memoryRuntime({ config, now = clock(), store, ...extra } = {}) {
+  const { emptyConfig } = await load('src/work/config.ts');
+  const { applyConfigProjects } = await load('src/work/runtime.ts');
+  const s = store ?? await memoryStore(now);
+  const cfg = config ?? emptyConfig();
+  applyConfigProjects(s, cfg);
+  const dataDir = tempDir();
+  return {
+    store: s,
+    config: cfg,
+    warnings: [],
+    dataDir,
+    backupDir: join(dataDir, 'backups'),
+    knownProjects: () => new Set(s.listProjects().map((p) => p.slug)),
+    ...extra,
+  };
+}
+
+export function captureIo(answers = []) {
+  const out = [];
+  const err = [];
+  const asked = [];
+  return {
+    io: {
+      out: (text) => out.push(text),
+      err: (text) => err.push(text),
+      ask: async (question) => { asked.push(question); return answers.shift() ?? ''; },
+    },
+    out,
+    err,
+    asked,
+  };
+}

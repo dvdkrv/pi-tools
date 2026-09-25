@@ -10,6 +10,7 @@
     "types": ["node"]
   },
   "include": [
+    "bin/**/*.ts",
     "extensions/**/*.ts",
     "src/**/*.ts"
   ]
