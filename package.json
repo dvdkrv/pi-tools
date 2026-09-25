@@ -28,7 +28,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "check": "node scripts/check-repository.mjs",
     "broker": "node --experimental-strip-types src/messaging/broker.ts",
-    "test:live": "node scripts/messaging-live-smoke.mjs"
+    "test:live": "node scripts/messaging-live-smoke.mjs",
+    "work:smoke": "node scripts/work-live-smoke.mjs"
   },
   "dependencies": {
     "@nats-io/jetstream": "3.4.0",

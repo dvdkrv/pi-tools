@@ -1,6 +1,6 @@
 # Pi Tools
 
-A single [Pi](https://github.com/earendil-works/pi-mono) package containing six local-development extensions: `claude-skill`, `loop`, `messaging`, `task`, `theme-sync`, and `worktree-manager`.
+A single [Pi](https://github.com/earendil-works/pi-mono) package containing seven local-development extensions: `claude-skill`, `loop`, `messaging`, `task`, `theme-sync`, `work`, and `worktree-manager`.
 
 ## Security
 
@@ -45,6 +45,31 @@ Automatic cleanup removes only clean Pi-managed worktrees and preserves their br
 ### theme-sync
 
 `theme-sync` follows `light` or `dark` appearance stored in `${XDG_STATE_HOME:-~/.local/state}/theme`, falling back to `LC_TERMINAL_THEME` and then dark. It switches only Pi's built-in `light` and `dark` themes, fences watcher startup, and removes watchers on reload or shutdown.
+
+### work
+
+A local work tracker for one person: one list of projects and items, a triage inbox, and a daily planner.
+
+- `/todo <text> [#project] [due:<date>]` captures an item instantly. The project comes from `#project` or from rules for the current repository.
+- `work_propose` lets agents propose follow-ups. Proposals only enter the triage inbox, with at most five pending per session.
+- `/triage` reviews candidates from Jira, GitHub, and agents: accept, merge, dismiss, snooze, bulk accept, or accept and promote to Jira.
+- `/today` syncs, triages, and opens a `today` tmux window running a fresh `plan-YYYY-MM-DD` Pi session with read-only snapshot tools and local-only update tools.
+
+The same features are available from the shell through `bin/work.ts` (`add`, `list`, `show`, `set`, `project`, `sync`, `triage`, `today`, `promote`, `undismiss`, `recap`, `export`, `import`). For example, use `alias work='node <package>/bin/work.ts'` and `alias todo='work add'`.
+
+Data lives in `${XDG_DATA_HOME:-~/.local/share}/work/work.db` (SQLite, mode 0600) with rotating JSON Lines backups. Configuration lives in `${XDG_CONFIG_HOME:-~/.config}/work/config.json`:
+
+```json
+{
+  "jira": { "site": "https://example.atlassian.net", "email": "user@example.com", "secret": { "command": ["pass", "show", "jira_api_key"] }, "defaultProject": "ABC" },
+  "github": { "accounts": [{ "user": "work-account", "orgs": ["example-org"] }] },
+  "projects": [{ "slug": "payments", "title": "Payments", "jiraEpic": "ABC-100" }],
+  "rules": [{ "repo": "payments-api", "project": "payments" }],
+  "planner": { "cwd": "~" }
+}
+```
+
+Jira and GitHub are read on demand only, and cached for 10 minutes. Jira writes happen only after an explicit confirmation: promoting an item or applying a suggested status transition. GitHub is read-only. Secrets are read at call time and never stored. `npm run work:smoke` runs read-only live connector checks.
 
 ### worktree-manager
 
