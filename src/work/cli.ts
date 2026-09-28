@@ -2,13 +2,17 @@ import { exportJsonl, importJsonl, writeRotatingBackup } from "./backup.ts";
 import { captureItem, resolveDue } from "./capture.ts";
 import { cliPromote, runCliTriage } from "./cli-triage.ts";
 import { expandHome } from "./config.ts";
+import type { PidReaders } from "./liveness.ts";
 import type { TmuxRunner } from "./planner.ts";
 import { defaultTmux, launchPlanner } from "./planner.ts";
 import { recapRange, renderRecap } from "./recap.ts";
+import { formatRestoreReport, runRestore } from "./restore.ts";
+import type { RestoreMode } from "./restore.ts";
 import { repoFromCwd as defaultRepoFromCwd } from "./rules.ts";
 import type { Runtime } from "./runtime.ts";
 import type { ItemPatch } from "./store.ts";
 import { formatSyncReport, syncAll } from "./sync.ts";
+import { tmuxRunner } from "./tmux.ts";
 import { openCandidates } from "./triage.ts";
 import type { Item, ItemStatus, WaitingOn } from "./types.ts";
 import { ITEM_STATUSES, WAITING_ON } from "./types.ts";
@@ -21,6 +25,8 @@ export type CliDeps = {
 	env: NodeJS.ProcessEnv;
 	repoFromCwd?: (cwd: string) => string | undefined;
 	tmux?: TmuxRunner;
+	readers?: PidReaders;
+	bootId?: () => string | undefined;
 };
 export type CliCommand = { usage: string; run: (args: string[], deps: CliDeps) => Promise<number> };
 
@@ -286,6 +292,17 @@ const recap: CliCommand = {
 	},
 };
 
+const restoreCommand: CliCommand = {
+	usage: "restore [--auto | --dry-run]         Reopen crashed Pi sessions in tmux",
+	async run(args, deps) {
+		const mode: RestoreMode = args.includes("--dry-run") ? "dry-run" : args.includes("--auto") ? "auto" : "manual";
+		const rt = deps.runtime();
+		const report = runRestore(mode, { store: rt.store, tmux: deps.tmux ?? tmuxRunner(), readers: deps.readers, bootId: deps.bootId });
+		deps.io.out(formatRestoreReport(report));
+		return 0;
+	},
+};
+
 const today: CliCommand = {
 	usage: "today                                Sync, triage, and open today's planner",
 	async run(_args, deps) {
@@ -301,7 +318,7 @@ const today: CliCommand = {
 };
 
 export const COMMANDS: Record<string, CliCommand> = {
-	add, list, show, set, project, sync, triage: triageCommand, today, promote, undismiss, recap, export: exportCommand, import: importCommand,
+	add, list, show, set, project, sync, triage: triageCommand, today, promote, undismiss, recap, restore: restoreCommand, export: exportCommand, import: importCommand,
 };
 
 export function usage(): string {
