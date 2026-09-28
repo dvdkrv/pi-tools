@@ -2,7 +2,7 @@ export type ProjectStatus = "active" | "parked" | "archived";
 export type ItemStatus = "todo" | "doing" | "waiting" | "parked" | "done" | "dropped";
 export type WaitingOn = "review" | "ci" | "person" | "external";
 export type Origin = "manual" | "jira" | "github" | "agent";
-export type LinkKind = "jira" | "github-pr" | "github-issue" | "chat" | "note" | "url";
+export type LinkKind = "jira" | "github-pr" | "github-issue" | "chat" | "note" | "url" | "session";
 export type CandidateKind = "new-item" | "attach-link" | "jira-update";
 export type CandidateSource = "jira" | "github" | "agent";
 export type CandidateState = "pending" | "accepted" | "merged" | "dismissed" | "snoozed" | "withdrawn";
@@ -16,7 +16,7 @@ export type SignalKind =
 	| "jira-status-changed"
 	| "jira-unassigned";
 export type ConnectorStatus = "ok" | "auth-failed" | "unreachable" | "error";
-export type Actor = "user" | "planner" | `agent:${string}` | `sync:${string}`;
+export type Actor = "user" | "planner" | `agent:${string}` | `sync:${string}` | `session:${string}`;
 export type JsonObject = Record<string, unknown>;
 
 export const ITEM_STATUSES: readonly ItemStatus[] = ["todo", "doing", "waiting", "parked", "done", "dropped"];
@@ -138,4 +138,45 @@ export type ConnectorResult = {
 	status: ConnectorStatus;
 	error?: string;
 	observations: Observation[];
+};
+
+export type SessionStatus = "working" | "needs-me" | "waiting-external" | "done";
+export type DeclaredStatus = "needs-me" | "waiting-external" | "done";
+export type StatusSource = "agent" | "auto";
+export type Liveness = "live" | "closed" | "crashed";
+export type LinkVia = "env" | "branch" | "worktree" | "manual";
+
+export const DECLARED_STATUSES: readonly DeclaredStatus[] = ["needs-me", "waiting-external", "done"];
+export const NOTE_MAX = 200;
+
+export type Session = {
+	id: string;
+	file: string | null;
+	cwd: string;
+	name: string | null;
+	pid: number | null;
+	tmuxPane: string | null;
+	tmuxWindow: string | null;
+	startedAt: string;
+	lastTurnAt: string | null;
+	endedAt: string | null;
+	status: SessionStatus;
+	note: string;
+	statusSource: StatusSource;
+	statusAt: string;
+	restoredFrom: number | null;
+	parentSession: string | null;
+	headless: boolean;
+};
+
+export type SessionStart = {
+	id: string;
+	file: string | null;
+	cwd: string;
+	name: string | null;
+	pid: number;
+	tmuxPane: string | null;
+	tmuxWindow: string | null;
+	parentSession: string | null;
+	headless: boolean;
 };

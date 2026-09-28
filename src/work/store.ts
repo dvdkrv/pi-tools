@@ -15,17 +15,23 @@ import type {
 	JsonObject,
 	Link,
 	LinkKind,
+	LinkVia,
 	NewCandidate,
 	NewLink,
 	Origin,
 	Plan,
 	Project,
 	ProjectStatus,
+	Session,
+	SessionStart,
+	SessionStatus,
 	Signal,
 	SignalKind,
+	StatusSource,
 	WaitingOn,
 	WorkEvent,
 } from "./types.ts";
+import { NOTE_MAX } from "./types.ts";
 
 export class WorkStoreError extends Error {}
 
@@ -51,6 +57,16 @@ export type CandidatePatch = {
 	evidence?: string | null;
 };
 
+export type SessionPatch = { lastTurnAt?: string; tmuxWindow?: string | null; name?: string | null; endedAt?: string | null; restoredFrom?: number | null };
+
+const SESSION_COLUMNS: Record<keyof SessionPatch, string> = {
+	lastTurnAt: "last_turn_at",
+	tmuxWindow: "tmux_window",
+	name: "name",
+	endedAt: "ended_at",
+	restoredFrom: "restored_from",
+};
+
 export const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const RESOLVED_STATES: readonly CandidateState[] = ["accepted", "merged", "dismissed", "withdrawn"];
@@ -67,12 +83,20 @@ export function itemNum(id: string): number {
 	return Number(match[1]);
 }
 
+export function sessionLinkKey(sessionId: string): string {
+	return `session:${sessionId}`;
+}
+
 function text(value: unknown): string | null {
 	return value === null || value === undefined ? null : String(value);
 }
 
 function json<T>(value: unknown, fallback: T): T {
 	return typeof value === "string" ? (JSON.parse(value) as T) : fallback;
+}
+
+function int(value: unknown): number | null {
+	return value === null || value === undefined ? null : Number(value);
 }
 
 function requireText(value: string, field: string): string {
@@ -182,6 +206,28 @@ function toRun(r: Row): ConnectorRun {
 		error: text(r.error),
 		at: String(r.at),
 		lastOkAt: text(r.last_ok_at),
+	};
+}
+
+function toSession(r: Row): Session {
+	return {
+		id: String(r.id),
+		file: text(r.file),
+		cwd: String(r.cwd),
+		name: text(r.name),
+		pid: int(r.pid),
+		tmuxPane: text(r.tmux_pane),
+		tmuxWindow: text(r.tmux_window),
+		startedAt: String(r.started_at),
+		lastTurnAt: text(r.last_turn_at),
+		endedAt: text(r.ended_at),
+		status: r.status as SessionStatus,
+		note: String(r.note),
+		statusSource: r.status_source as StatusSource,
+		statusAt: String(r.status_at),
+		restoredFrom: int(r.restored_from),
+		parentSession: text(r.parent_session),
+		headless: Number(r.headless) === 1,
 	};
 }
 
@@ -619,6 +665,76 @@ export class WorkStore {
 	lastEventAt(entity: string): string | undefined {
 		const row = this.one("SELECT MAX(at) AS at FROM event WHERE entity = ?", entity);
 		return row && row.at !== null ? String(row.at) : undefined;
+	}
+
+	// Sessions (operational: no events). Session links are domain links and write events.
+
+	startSession(input: SessionStart): Session {
+		return this.transaction(() => {
+			const now = this.now();
+			if (this.getSession(input.id)) {
+				this.run(
+					"UPDATE session SET file = ?, cwd = ?, name = ?, pid = ?, tmux_pane = ?, tmux_window = ?, parent_session = ?, headless = ?, started_at = ?, ended_at = NULL WHERE id = ?",
+					input.file, input.cwd, input.name, input.pid, input.tmuxPane, input.tmuxWindow, input.parentSession, input.headless ? 1 : 0, now, input.id,
+				);
+			} else {
+				this.run(
+					`INSERT INTO session (id, file, cwd, name, pid, tmux_pane, tmux_window, parent_session, headless, started_at, status, note, status_source, status_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'needs-me', 'new session', 'auto', ?)`,
+					input.id, input.file, input.cwd, input.name, input.pid, input.tmuxPane, input.tmuxWindow, input.parentSession, input.headless ? 1 : 0, now, now,
+				);
+			}
+			return this.getSession(input.id) as Session;
+		});
+	}
+
+	getSession(id: string): Session | undefined {
+		const row = this.one("SELECT * FROM session WHERE id = ?", id);
+		return row ? toSession(row) : undefined;
+	}
+
+	listSessions(): Session[] {
+		return this.all("SELECT * FROM session ORDER BY started_at, id").map(toSession);
+	}
+
+	setSessionStatus(id: string, status: SessionStatus, note: string, source: StatusSource): Session {
+		const before = this.getSession(id);
+		if (!before) throw new WorkStoreError(`Unknown session: ${id}`);
+		const statusAt = before.status === status ? before.statusAt : this.now();
+		this.run("UPDATE session SET status = ?, note = ?, status_source = ?, status_at = ? WHERE id = ?", status, note.trim().slice(0, NOTE_MAX), source, statusAt, id);
+		return this.getSession(id) as Session;
+	}
+
+	updateSession(id: string, patch: SessionPatch): Session {
+		if (!this.getSession(id)) throw new WorkStoreError(`Unknown session: ${id}`);
+		const keys = (Object.keys(patch) as (keyof SessionPatch)[]).filter((key) => patch[key] !== undefined);
+		if (keys.length > 0) {
+			this.run(`UPDATE session SET ${keys.map((key) => `${SESSION_COLUMNS[key]} = ?`).join(", ")} WHERE id = ?`, ...keys.map((key) => patch[key] as Param), id);
+		}
+		return this.getSession(id) as Session;
+	}
+
+	deleteSession(id: string): boolean {
+		return this.run("DELETE FROM session WHERE id = ?", id).changes > 0;
+	}
+
+	sessionLink(sessionId: string): Link | undefined {
+		return this.findLinkByKey(sessionLinkKey(sessionId));
+	}
+
+	linkSession(sessionId: string, targetItemId: string, via: LinkVia, actor: Actor): Link {
+		return this.transaction(() => {
+			const target = this.getItem(targetItemId);
+			if (!target) throw new WorkStoreError(`Unknown item: ${targetItemId}`);
+			const key = sessionLinkKey(sessionId);
+			const existing = this.findLinkByKey(key);
+			if (!existing) return this.addLink(target.id, { kind: "session", key, state: { via } }, actor);
+			if (existing.itemId === target.id && existing.state?.via === via) return existing;
+			this.run("UPDATE link SET item_num = ?, state = ?, state_at = ? WHERE id = ?", itemNum(target.id), JSON.stringify({ via }), this.now(), existing.id);
+			const after = this.getLink(existing.id) as Link;
+			this.event(actor, `link:${existing.id}`, "update", { before: existing, after });
+			return after;
+		});
 	}
 
 	// Connector runs and meta (operational: no events)
