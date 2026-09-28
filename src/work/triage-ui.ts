@@ -1,23 +1,16 @@
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { parseKey, truncateToWidth } from "@earendil-works/pi-tui";
 import { fuzzySelect } from "../worktree/fuzzy-select.ts";
-import { applyJiraUpdate, formatPreview, promoteItem, promotionPreview } from "./connectors/jira.ts";
+import type { KeyState } from "./keymap.ts";
+import { INITIAL_KEY_STATE, keyStep, moveIndex } from "./keymap.ts";
 import type { Runtime } from "./runtime.ts";
 import { errorMessage } from "./secrets.ts";
-import {
-	acceptAllFromSource,
-	acceptCandidate,
-	candidateDetails,
-	candidateLabel,
-	dismissCandidate,
-	mergeCandidate,
-	openCandidates,
-	snoozeCandidate,
-	TriageError,
-} from "./triage.ts";
+import type { TriageActionUi, TriageKey } from "./triage-actions.ts";
+import { confirmAndPromote, runTriageAction, TRIAGE_ACTIONS } from "./triage-actions.ts";
+import { candidateLabel, candidateSummary, openCandidates } from "./triage.ts";
 import type { Candidate } from "./types.ts";
 
-export type TriageKey = "a" | "m" | "d" | "z" | "A" | "p" | "enter";
+export type { TriageKey } from "./triage-actions.ts";
 export type TriageUiContext = {
 	ui: {
 		custom: <T>(factory: (tui: { requestRender: () => void }, theme: any, keybindings: unknown, done: (value: T) => void) => any) => Promise<T>;
@@ -29,23 +22,13 @@ export type TriageUiContext = {
 };
 type ListResult = { type: "action"; key: TriageKey; candidate: Candidate } | { type: "cancel" };
 
-const ACTION_KEYS: readonly string[] = ["a", "m", "d", "z", "A", "p"];
 const WINDOW = 10;
-
-export function triageKeyFor(data: string): TriageKey | undefined {
-	if (ACTION_KEYS.includes(data)) return data as TriageKey;
-	if (matchesKey(data, Key.enter)) return "enter";
-	return undefined;
-}
-
-function summaryLine(candidate: Candidate): string {
-	const target = candidate.relatesTo ? `→ ${candidate.relatesTo}` : candidate.kind === "new-item" ? `#${candidate.proposedProject ?? "misc"}` : "";
-	return [target, candidate.reason, candidate.evidence ?? ""].filter(Boolean).join(" · ");
-}
+const HINTS = "j/k move • gg/G first/last • ^d/^u half page • a accept/apply • m merge • d dismiss • z snooze • A all from source • p accept+promote • enter details • esc close";
 
 export function triageList(ctx: TriageUiContext, candidates: Candidate[]): Promise<ListResult> {
 	return ctx.ui.custom<ListResult>((tui, theme, _keybindings, done) => {
 		let selected = 0;
+		let keys: KeyState = INITIAL_KEY_STATE;
 		return {
 			invalidate() {},
 			render(width: number): string[] {
@@ -56,102 +39,54 @@ export function triageList(ctx: TriageUiContext, candidates: Candidate[]): Promi
 					const label = candidateLabel(candidates[i]);
 					const prefix = i === selected ? theme.fg("accent", "> ") : "  ";
 					lines.push(truncateToWidth(prefix + (i === selected ? theme.fg("accent", label) : label), width));
-					lines.push(truncateToWidth(`    ${theme.fg("muted", summaryLine(candidates[i]))}`, width));
+					lines.push(truncateToWidth(`    ${theme.fg("muted", candidateSummary(candidates[i]))}`, width));
 				}
-				lines.push("", truncateToWidth(theme.fg("dim", "↑↓ move • a accept/apply • m merge • d dismiss • z snooze • A all from source • p accept+promote • enter details • esc close"), width), border);
+				lines.push("", truncateToWidth(theme.fg("dim", HINTS), width), border);
 				return lines;
 			},
 			handleInput(data: string): void {
-				if (matchesKey(data, Key.escape)) {
+				const name = parseKey(data);
+				if (!name) return;
+				const step = keyStep(keys, name, { actions: TRIAGE_ACTIONS });
+				keys = step.state;
+				const { action } = step;
+				if (action.type === "close") {
 					done({ type: "cancel" });
 					return;
 				}
-				const key = triageKeyFor(data);
-				if (key) {
-					done({ type: "action", key, candidate: candidates[selected] });
+				if (action.type === "enter" || action.type === "action") {
+					done({ type: "action", key: action.type === "enter" ? "enter" : (action.key as TriageKey), candidate: candidates[selected] });
 					return;
 				}
-				if (matchesKey(data, Key.up)) selected = Math.max(0, selected - 1);
-				if (matchesKey(data, Key.down)) selected = Math.min(candidates.length - 1, selected + 1);
+				if (action.type === "move") selected = moveIndex(selected, candidates.length, action.move, WINDOW);
 				tui.requestRender();
 			},
 		};
 	});
 }
 
-export async function promoteWithConfirm(ctx: TriageUiContext, runtime: Runtime, itemId: string): Promise<void> {
-	if (!runtime.jira) throw new TriageError("Jira is not configured");
-	const preview = promotionPreview(runtime.store, itemId, runtime.jira.config);
-	if (!(await ctx.ui.confirm(`Create Jira ${preview.issueType} for ${itemId}?`, formatPreview(preview)))) return;
-	const link = await promoteItem(runtime.store, itemId, runtime.jira);
-	ctx.ui.notify(`Created ${link.key.slice("jira:".length)} for ${itemId}`, "info");
+export function piTriageUi(ctx: TriageUiContext): TriageActionUi {
+	return {
+		input: (title, placeholder) => ctx.ui.input(title, placeholder),
+		select: (title, options) => ctx.ui.select(title, options),
+		confirm: (title, message) => ctx.ui.confirm(title, message),
+		notify: (message, level) => ctx.ui.notify(message, level),
+		pickItem: (title, items) => fuzzySelect(ctx, {
+			title,
+			items,
+			getLabel: (item) => `${item.id} ${item.title}`,
+			getDescription: (item) => `#${item.project} · ${item.status}`,
+			getSearchText: (item) => `${item.id} ${item.title} ${item.project}`,
+		}),
+	};
 }
 
-async function applyUpdate(ctx: TriageUiContext, runtime: Runtime, candidate: Candidate): Promise<void> {
-	if (!runtime.jira) throw new TriageError("Jira is not configured");
-	if (!(await ctx.ui.confirm("Apply Jira update?", candidateDetails(candidate)))) return;
-	const result = await applyJiraUpdate(runtime.store, candidate.id, runtime.jira, async (options) => {
-		const labels = options.map((option) => `${option.name} (${option.category})`);
-		const choice = await ctx.ui.select(`Transition for ${String(candidate.payload.ticket)}`, labels);
-		return options[labels.indexOf(choice ?? "")];
-	});
-	ctx.ui.notify(result === "applied" ? `Updated ${String(candidate.payload.ticket)}` : "Cancelled", "info");
+export async function promoteWithConfirm(ctx: TriageUiContext, runtime: Runtime, itemId: string): Promise<void> {
+	await confirmAndPromote(piTriageUi(ctx), runtime, itemId);
 }
 
 export async function handleTriageAction(ctx: TriageUiContext, runtime: Runtime, key: TriageKey, candidate: Candidate): Promise<void> {
-	const { store } = runtime;
-	const isJira = candidate.kind === "jira-update";
-	switch (key) {
-		case "enter":
-			ctx.ui.notify(candidateDetails(candidate), "info");
-			return;
-		case "d":
-			dismissCandidate(store, candidate.id);
-			return;
-		case "z": {
-			const days = await ctx.ui.input("Snooze for how many days?", "3");
-			if (days === undefined) return;
-			snoozeCandidate(store, candidate.id, days.trim() ? Number(days) : 3);
-			return;
-		}
-		case "A": {
-			if (isJira) throw new TriageError("Jira updates can't be bulk accepted");
-			ctx.ui.notify(`Accepted ${acceptAllFromSource(store, candidate.source).length} from ${candidate.source}`, "info");
-			return;
-		}
-		case "m": {
-			if (isJira) throw new TriageError("Jira updates can't be merged");
-			const target = await fuzzySelect(ctx, {
-				title: "Merge into item",
-				items: store.listItems({ statuses: ["todo", "doing", "waiting", "parked"] }),
-				getLabel: (item) => `${item.id} ${item.title}`,
-				getDescription: (item) => `#${item.project} · ${item.status}`,
-				getSearchText: (item) => `${item.id} ${item.title} ${item.project}`,
-			});
-			if (target) mergeCandidate(store, candidate.id, target.id);
-			return;
-		}
-		case "a":
-		case "p": {
-			if (isJira) {
-				if (key === "p") throw new TriageError("Use a to apply a Jira update");
-				await applyUpdate(ctx, runtime, candidate);
-				return;
-			}
-			let edits: { title?: string; project?: string } = {};
-			if (candidate.kind === "new-item") {
-				const title = await ctx.ui.input("Title (empty keeps it)", candidate.title);
-				if (title === undefined) return;
-				const proposed = candidate.proposedProject ?? "misc";
-				const project = await ctx.ui.select("Project", [proposed, ...[...runtime.knownProjects()].filter((slug) => slug !== proposed).sort()]);
-				if (!project) return;
-				edits = { title: title.trim() || undefined, project };
-			}
-			const item = acceptCandidate(store, candidate.id, edits);
-			if (key === "p") await promoteWithConfirm(ctx, runtime, item.id);
-			return;
-		}
-	}
+	await runTriageAction(piTriageUi(ctx), runtime, key, candidate);
 }
 
 export async function runTriageUi(ctx: TriageUiContext, runtime: Runtime): Promise<void> {

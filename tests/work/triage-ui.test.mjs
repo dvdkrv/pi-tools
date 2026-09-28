@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { load, memoryRuntime } from './helpers.mjs';
+import { NAVIGATION } from './fixtures/keymap-table.mjs';
 
 const ui = await load('src/work/triage-ui.ts');
 
@@ -21,13 +22,6 @@ function fakeCtx({ inputs = [], selects = [], confirms = [] } = {}) {
 }
 
 const newCandidate = (rt, n) => rt.store.addCandidate({ kind: 'new-item', source: 'github', dedupeKey: `k${n}`, title: `Review ${n}`, reason: 'r', proposedProject: 'misc' }, 'sync:github');
-
-test('keys map to triage actions', () => {
-  assert.equal(ui.triageKeyFor('a'), 'a');
-  assert.equal(ui.triageKeyFor('A'), 'A');
-  assert.equal(ui.triageKeyFor('\r'), 'enter');
-  assert.equal(ui.triageKeyFor('x'), undefined);
-});
 
 test('accept asks for title and project, and cancelling the title changes nothing', async () => {
   const rt = await memoryRuntime();
@@ -59,4 +53,42 @@ test('promote without Jira reports a clear error', async () => {
   const f = fakeCtx({ inputs: [''], selects: [0] });
   await assert.rejects(ui.handleTriageAction(f.ctx, rt, 'p', c), /Jira is not configured/);
   assert.equal(rt.store.listItems().length, 1);
+});
+
+function listHarness(count) {
+  const candidates = Array.from({ length: count }, (_, i) => ({
+    id: i + 1, kind: 'new-item', source: 'github', title: `Candidate ${i}`, reason: 'r', evidence: null, relatesTo: null, proposedProject: 'misc', payload: {},
+  }));
+  let component;
+  const ctx = {
+    ui: {
+      custom: (factory) => new Promise((resolve) => {
+        component = factory({ requestRender() {} }, { fg: (_color, text) => text, bold: (text) => text }, null, resolve);
+      }),
+    },
+  };
+  const result = ui.triageList(ctx, candidates);
+  return { press: (...keys) => { for (const key of keys) component.handleInput(key); }, result };
+}
+
+for (const entry of NAVIGATION) {
+  test(`/triage keys: ${entry.name}`, async () => {
+    const h = listHarness(20);
+    h.press('j', 'j', 'j', 'j', 'j', ...entry.keys, '\r');
+    const result = await h.result;
+    assert.equal(result.key, 'enter');
+    assert.equal(result.candidate.id, entry.list + 1);
+  });
+}
+
+test('/triage keeps its action letters and closes with Esc or q', async () => {
+  const accept = listHarness(3);
+  accept.press('j', 'A');
+  assert.deepEqual(await accept.result.then((r) => [r.key, r.candidate.id]), ['A', 2]);
+  const esc = listHarness(3);
+  esc.press('\x1b');
+  assert.deepEqual(await esc.result, { type: 'cancel' });
+  const q = listHarness(3);
+  q.press('q');
+  assert.deepEqual(await q.result, { type: 'cancel' });
 });

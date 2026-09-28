@@ -100,6 +100,11 @@ export function candidateLabel(candidate: Candidate): string {
 	return `[${candidate.source}] ${kind}${candidate.title}`;
 }
 
+export function candidateSummary(candidate: Candidate): string {
+	const target = candidate.relatesTo ? `→ ${candidate.relatesTo}` : candidate.kind === "new-item" ? `#${candidate.proposedProject ?? "misc"}` : "";
+	return [target, candidate.reason, candidate.evidence ?? ""].filter(Boolean).join(" · ");
+}
+
 export function candidateDetails(candidate: Candidate, remaining?: number): string {
 	const lines = [`${remaining ? `(${remaining} open) ` : ""}${candidateLabel(candidate)}`, `  reason: ${candidate.reason}`];
 	if (candidate.evidence) lines.push(`  evidence: ${candidate.evidence}`);
