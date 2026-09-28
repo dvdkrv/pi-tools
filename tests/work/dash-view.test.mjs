@@ -1,0 +1,149 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { load, memoryStore } from './helpers.mjs';
+
+const { buildDashModel, loadSessions } = await load('src/work/dash/model.ts');
+const { renderDash, HINTS } = await load('src/work/dash/view.ts');
+const { plainStyle, ansiStyle } = await load('src/work/dash/text.ts');
+
+const NOW = new Date('2026-09-25T09:00:00.000Z');
+const ago = (minutes) => new Date(NOW.getTime() - minutes * 60_000).toISOString();
+const entry = (overrides) => ({
+  id: 'x', file: null, cwd: '/src/x', name: null, pid: 1, tmuxPane: '%1', tmuxWindow: null, startedAt: ago(600), lastTurnAt: null, endedAt: null,
+  status: 'working', note: '', statusSource: 'auto', statusAt: ago(0), restoredFrom: null, parentSession: null, headless: false,
+  liveness: 'live', alive: true, itemId: null, itemTitle: null, ...overrides,
+});
+const SESSIONS = [
+  entry({ id: 'd1', tmuxWindow: 'sap-rfc', status: 'needs-me', statusAt: ago(12), note: 'Trim the overview to 1.5k words?', itemId: 'W-7', itemTitle: 'SAP RFC connector overview' }),
+  entry({ id: 'c1', parentSession: 'd1', headless: true, tmuxPane: null, name: 'impl-auth', status: 'needs-me', statusAt: ago(3), lastTurnAt: ago(3), note: 'Which test runner?' }),
+  entry({ id: 'd2', tmuxWindow: 'payments-api', status: 'needs-me', statusAt: ago(2), name: 'Fix flaky test' }),
+  entry({ id: 'w1', tmuxWindow: 'web', status: 'waiting-external', statusAt: ago(180), note: 'CI run for PR 42', itemId: 'W-3', itemTitle: 'Launch checklist' }),
+  entry({ id: 'o1', tmuxWindow: 'docs', status: 'done', statusAt: ago(120), note: 'Published the guide', itemId: 'W-2', itemTitle: 'Docs refresh' }),
+  entry({ id: 'o2', tmuxWindow: 'infra', status: 'needs-me', liveness: 'crashed', alive: false, lastTurnAt: ago(1440), note: 'Which region first?' }),
+  entry({ id: 'o3', cwd: '/src/old-tool', liveness: 'closed', alive: false, endedAt: ago(7200), lastTurnAt: ago(7200) }),
+  entry({ id: 'o4', tmuxWindow: 'ancient', liveness: 'closed', alive: false, endedAt: ago(11520), lastTurnAt: ago(11520) }),
+];
+const model = () => buildDashModel({ sessions: SESSIONS, triageCount: 3, now: NOW });
+const state = (overrides = {}) => ({ selected: 'session:d1', filter: '', editing: false, message: '', ...overrides });
+const plain = (lines) => lines.map((line) => line.trimEnd());
+
+test('sections order sessions, nest children under their parent, and drop old ended sessions', () => {
+  const m = model();
+  assert.deepEqual(m.sections.map((s) => s.id), ['decisions', 'waiting', 'working', 'other']);
+  assert.deepEqual(m.sections[0].rows.map((r) => r.key), ['session:d1', 'session:c1', 'session:d2', 'triage']);
+  assert.equal(m.sections[0].rows[1].depth, 1);
+  assert.deepEqual(m.sections[1].rows.map((r) => r.key), ['session:w1']);
+  assert.deepEqual(m.sections[2].rows, []);
+  assert.deepEqual(m.sections[3].rows.map((r) => r.key), ['session:o1', 'session:o2', 'session:o3']);
+  assert.equal(buildDashModel({ sessions: SESSIONS, triageCount: 0, now: NOW }).sections[0].rows.some((r) => r.kind === 'triage'), false);
+});
+
+test('a child follows its parent into any section, and an orphaned child is listed under Other sessions', () => {
+  const m = buildDashModel({
+    now: NOW,
+    triageCount: 0,
+    sessions: [
+      entry({ id: 'p', tmuxWindow: 'api', status: 'waiting-external' }),
+      entry({ id: 'k', parentSession: 'p', headless: true, tmuxPane: null, status: 'needs-me' }),
+      entry({ id: 'lost', parentSession: 'gone', headless: true, tmuxPane: null, status: 'needs-me' }),
+    ],
+  });
+  assert.deepEqual(m.sections[0].rows, []);
+  assert.deepEqual(m.sections[1].rows.map((r) => [r.key, r.depth]), [['session:p', 0], ['session:k', 1]]);
+  assert.deepEqual(m.sections[3].rows.map((r) => [r.key, r.depth]), [['session:lost', 0]]);
+});
+
+test('an 80-column frame', () => {
+  assert.deepEqual(plain(renderDash(model(), state(), 80, 24, plainStyle)), [
+    'Work dashboard',
+    'Decisions (3)',
+    '> needs-me   sap-rfc       W-7  12m  "Trim the overview to 1.5k words?"',
+    '    needs-me   impl-auth     -     3m  "Which test runner?"',
+    '  needs-me   payments-api  -     2m  Fix flaky test',
+    '  triage     3 pending candidates',
+    'Waiting (1)',
+    '  waiting    web           W-3   3h  "CI run for PR 42"',
+    'Working (0)',
+    'Other sessions (3)',
+    '  done       docs          W-2   2h  "Published the guide"',
+    '  crashed    infra         -    24h  "Which region first?"',
+    '  closed     old-tool      -     5d',
+    HINTS,
+    '',
+  ]);
+  assert.equal(HINTS, 'j/k move · enter open · L link · D delete · / filter · ? help · q quit');
+});
+
+test('a 160-column frame shows item titles', () => {
+  assert.deepEqual(plain(renderDash(model(), state(), 160, 24, plainStyle)), [
+    'Work dashboard',
+    'Decisions (3)',
+    '> needs-me   sap-rfc       W-7 SAP RFC connector overview  12m  "Trim the overview to 1.5k words?"',
+    '    needs-me   impl-auth     -                                3m  "Which test runner?"',
+    '  needs-me   payments-api  -                                2m  Fix flaky test',
+    '  triage     3 pending candidates',
+    'Waiting (1)',
+    '  waiting    web           W-3 Launch checklist             3h  "CI run for PR 42"',
+    'Working (0)',
+    'Other sessions (3)',
+    '  done       docs          W-2 Docs refresh                 2h  "Published the guide"',
+    '  crashed    infra         -                               24h  "Which region first?"',
+    '  closed     old-tool      -                                5d',
+    HINTS,
+    '',
+  ]);
+});
+
+test('ANSI styling highlights the selection and colors crashed rows', () => {
+  const lines = renderDash(model(), state(), 80, 24, ansiStyle);
+  assert.ok(lines[2].startsWith('\x1b[7m> needs-me'));
+  assert.ok(lines[11].startsWith('\x1b[31m  crashed'));
+  assert.ok(lines.every((line) => !line.includes('\n')));
+});
+
+test('the filter hides non-matching rows, matches item titles at any width, and shows in the title', () => {
+  assert.deepEqual(plain(renderDash(model(), state({ selected: 'session:o2', filter: 'infra' }), 80, 24, plainStyle)), [
+    'Work dashboard  /infra',
+    'Decisions (0)',
+    'Waiting (0)',
+    'Working (0)',
+    'Other sessions (1)',
+    '> crashed    infra         -    24h  "Which region first?"',
+    HINTS,
+    '',
+  ]);
+  const byTitle = plain(renderDash(model(), state({ selected: null, filter: 'launch', editing: true }), 80, 24, plainStyle));
+  assert.equal(byTitle[0], 'Work dashboard  /launch_');
+  assert.ok(byTitle.includes('  waiting    web           W-3   3h  "CI run for PR 42"'));
+  assert.equal(byTitle.length, 8);
+});
+
+test('scrolling keeps the selected row visible, and the message line is last', () => {
+  assert.deepEqual(plain(renderDash(model(), state({ selected: 'session:o3', message: 'Refreshed' }), 80, 6, plainStyle)), [
+    'Work dashboard',
+    '  done       docs          W-2   2h  "Published the guide"',
+    '  crashed    infra         -    24h  "Which region first?"',
+    '> closed     old-tool      -     5d',
+    HINTS,
+    'Refreshed',
+  ]);
+});
+
+test('hostile notes cannot inject terminal escapes', () => {
+  const m = buildDashModel({ now: NOW, triageCount: 0, sessions: [entry({ id: 'h', tmuxWindow: 'x\x1b]0;evil\x07', status: 'needs-me', note: 'bad\x1b[2Jnote\nsecond' })] });
+  const lines = renderDash(m, state({ selected: null }), 80, 24, plainStyle);
+  assert.ok(lines.every((line) => !/[\x00-\x1f]/.test(line)));
+  assert.match(lines[2], /"bad \[2Jnote second"/);
+});
+
+test('loadSessions adds liveness and the linked item', async () => {
+  const store = await memoryStore();
+  const item = store.addItem({ project: 'misc', title: 'Linked work', origin: 'manual' }, 'user');
+  store.startSession({ id: 's1', file: null, cwd: '/src/api', name: null, pid: 10, tmuxPane: '%1', tmuxWindow: 'api', parentSession: null, headless: false });
+  store.startSession({ id: 's2', file: null, cwd: '/src/api', name: null, pid: 11, tmuxPane: '%2', tmuxWindow: 'api', parentSession: null, headless: false });
+  store.linkSession('s1', item.id, 'manual', 'user');
+  const readers = { kill: (pid) => { if (pid !== 10) throw new Error('kill ESRCH'); }, environ: () => undefined };
+  const [s1, s2] = loadSessions(store, [{ paneId: '%1', windowId: '@1', windowName: 'api', sessionName: 'main', path: '/src/api', command: 'node' }], readers);
+  assert.deepEqual([s1.liveness, s1.itemId, s1.itemTitle], ['live', 'W-1', 'Linked work']);
+  assert.deepEqual([s2.liveness, s2.itemId], ['crashed', null]);
+});
