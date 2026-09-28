@@ -37,7 +37,12 @@ These resolve gaps or conflicts in the spec. Each is small and reversible. Pleas
 1. **A "turn" is a Pi agent run.** Pi's `turn_end` fires after every model request inside a run, so using it would flip a working session to `needs-me` between tool calls. This plan therefore sets `working` on `agent_start` and applies the turn-end fallback on `agent_end`. `last_turn_at`, window refresh, and linking also run on `agent_end`.
 2. **Automatic fallback note.** When the agent does not call `session_status`, the fallback `needs-me` note is the last non-empty line of the final assistant text, clipped to 200 characters. Decisions then shows the question without extra effort from the agent.
 3. **Clean shutdown versus reboot.** Pi emits `session_shutdown` even on `SIGHUP` and `SIGTERM`, so a graceful reboot would mark every session closed, and restore would never run. The rule used here: a shutdown is clean unless Pi received `SIGHUP` or `SIGTERM` *and* the session's pane still exists, or the tmux server is unreachable. Closing a pane (`kill-pane`) therefore stays clean. Reboots and `tmux kill-server` leave sessions crashed, so they are restored.
-4. **Every mode registers.** Per the spec's `headless` field, sessions in `print`, `json`, and `rpc` modes, and TUI sessions outside tmux, register as headless with no pane or window, even when `TMUX_PANE` is inherited. `pi -p` runs therefore appear briefly and then show as closed under Other sessions.
+4. **Which sessions register.** `headless` means `ctx.mode` is not `tui`. Registration depends on the mode:
+   - **TUI** sessions always register as top-level interactive sessions (`headless: false`, with no parent even if `PI_WORK_PARENT_SESSION` is inherited). Inside tmux they record their pane and window. Outside tmux they have no pane or window, and `Enter` opens their transcript (decision 11).
+   - **`rpc`** sessions always register, as headless.
+   - **`print` and `json`** runs register only when `PI_WORK_PARENT_SESSION` is set, as headless children. Other one-shot runs, such as a plain `pi -p`, are not recorded at all.
+
+   Headless sessions never record a pane or window, even when `TMUX_PANE` is inherited. Automatic restore still reopens only sessions that had a tmux pane, so a crashed TUI session from outside tmux is reopened only by `Enter` in the dashboard.
 5. **Liveness gap.** A process that is alive but whose pane is gone is not live. The spec's table does not cover this case, so it shows as crashed, but restore and reopen never start a second Pi on a session whose PID is still alive.
 6. **Linking details.** A PR head branch counts only when the PR's repository matches the session's repository. Jira keys are matched case-insensitively in branch names. An ambiguous branch rule stops linking for that attempt instead of falling through to the worktree rule. The GitHub connector adds `head` (the PR head branch) to detailed PR link state. Automatic links use the actor `session:<id>`, and link state records `{ "via": "env" | "branch" | "worktree" | "manual" }`.
 7. **Filter semantics.** `/` hides non-matching rows as you type, and `n`/`N` cycle through the remaining rows with wrap-around. Filtering matches item titles even at 80 columns.
@@ -1088,6 +1093,7 @@ git commit -m "feat: link sessions to items from launch, branch, and worktree ev
 - Consumes: `store.startSession`, `setSessionStatus`, `updateSession` (Task 1). `windowNameOf`, `listPanes`, `tmuxRunner` (Task 2). `autoLinkSession`, `LinkDeps` (Task 3). `defaultGit` (Task 3).
 - Produces:
   - `transcript.ts`: `TRANSCRIPT_LIMIT = 30`, `TranscriptMessage = { role: "user" | "assistant"; text: string }`, `messageText(message: unknown): string`, `lastAssistantLine(messages: readonly unknown[]): string`, `parseTranscript(jsonl: string, limit?): TranscriptMessage[]`, `readTranscript(path: string, limit?): TranscriptMessage[]`, `formatTranscript(messages): string`
+  - Registration rule (decision 4): `tui` always registers as top-level (`headless: false`, `parentSession: null`), with a pane only inside tmux. `rpc` always registers as headless. `print`, `json`, and any other mode register only when `PI_WORK_PARENT_SESSION` is set, as headless children. Unregistered sessions make every tracker method a no-op, so `session_status` reports `recorded: false`.
   - `session-tracker.ts`: `PARENT_SESSION_ENV = "PI_WORK_PARENT_SESSION"`, `SessionInfo = { id; file: string | null; cwd; name: string | null; mode: string }`, `TrackerDeps`, `SessionTracker` (`pane`, `start`, `agentStart`, `declare`, `agentEnd`, `rename`, `shutdown`), `createSessionTracker(deps)`, `shutdownIsClean({ reason, signalled, pane, tmux }): boolean`, `SignalSource`, and `watchSignals(source, onSignal): () => void`
   - `extensions/work.ts`: `WorkExtensionOptions` gains `git?: GitRunner`, `pid?: number`, and `signals?: SignalSource`. `SESSION_STATUS_DESCRIPTION` is the verbatim spec text. The static tool is `session_status`.
 
@@ -1340,11 +1346,41 @@ test('a child in rpc mode registers as headless, with its parent and no pane', a
   assert.equal(result.details.recorded, true);
 });
 
-test('a terminal session outside tmux is headless too', async () => {
+test('a terminal session outside tmux registers as top-level and interactive, without a pane', async () => {
   const rt = await memoryRuntime();
   const s = setup({ runtime: rt, env: {} });
   await s.emit('session_start', { reason: 'startup' });
-  assert.equal(rt.store.getSession('sess-1').headless, true);
+  const row = rt.store.getSession('sess-1');
+  assert.deepEqual([row.headless, row.parentSession, row.tmuxPane, row.tmuxWindow], [false, null, null, null]);
+});
+
+test('a terminal session is never a child, even with an inherited PI_WORK_PARENT_SESSION', async () => {
+  const rt = await memoryRuntime();
+  const s = setup({ runtime: rt, env: { ...IN_TMUX, PI_WORK_PARENT_SESSION: 'parent-1' } });
+  await s.emit('session_start', { reason: 'startup' });
+  const row = rt.store.getSession('sess-1');
+  assert.deepEqual([row.headless, row.parentSession, row.tmuxPane], [false, null, '%3']);
+});
+
+test('rpc always registers, and print and json runs register only as children', async () => {
+  for (const [mode, env, registered] of [
+    ['rpc', IN_TMUX, true],
+    ['rpc', {}, true],
+    ['print', IN_TMUX, false],
+    ['json', {}, false],
+    ['print', { ...IN_TMUX, PI_WORK_PARENT_SESSION: 'parent-1' }, true],
+    ['json', { PI_WORK_PARENT_SESSION: 'parent-1' }, true],
+  ]) {
+    const label = `${mode} ${JSON.stringify(env)}`;
+    const rt = await memoryRuntime();
+    const s = setup({ runtime: rt, mode, env });
+    await s.emit('session_start', { reason: 'startup' });
+    const row = rt.store.getSession('sess-1');
+    assert.equal(Boolean(row), registered, label);
+    if (row) assert.deepEqual([row.headless, row.tmuxPane, row.tmuxWindow], [true, null, null], label);
+    const result = await s.tools.get('session_status').execute('c1', { status: 'done', note: 'Finished' }, undefined, undefined, s.ctx);
+    assert.equal(result.details.recorded, registered, label);
+  }
 });
 
 test('a run is working, and without a declaration it ends as needs-me with the last line as its note', async () => {
@@ -1559,10 +1595,13 @@ export function createSessionTracker(deps: TrackerDeps): SessionTracker {
 			return pane;
 		},
 		start(info) {
+			const headless = info.mode !== "tui";
+			// Terminal sessions are always top-level; only headless sessions can be children.
+			const parentSession = headless ? deps.env[PARENT_SESSION_ENV]?.trim() || null : null;
+			// print and json runs are one-shot scripts: record them only as child agents. rpc always registers.
+			if (headless && info.mode !== "rpc" && !parentSession) return;
 			id = info.id;
-			const envPane = deps.env.TMUX && deps.env.TMUX_PANE ? deps.env.TMUX_PANE : null;
-			const headless = info.mode !== "tui" || !envPane;
-			pane = headless ? null : envPane;
+			pane = !headless && deps.env.TMUX && deps.env.TMUX_PANE ? deps.env.TMUX_PANE : null;
 			guard((store, sessionId) => {
 				store.startSession({
 					id: sessionId,
@@ -1572,7 +1611,7 @@ export function createSessionTracker(deps: TrackerDeps): SessionTracker {
 					pid: deps.pid,
 					tmuxPane: pane,
 					tmuxWindow: pane ? windowNameOf(deps.tmux, pane) : null,
-					parentSession: deps.env[PARENT_SESSION_ENV]?.trim() || null,
+					parentSession,
 					headless,
 				});
 				autoLinkSession(store, sessionId, linkDeps);
@@ -2050,6 +2089,7 @@ test('selection takes crashed, unfinished, top-level sessions from the last 7 da
     session({ id: 'live', liveness: 'live', alive: true }),
     session({ id: 'orphan', alive: true }),
     session({ id: 'headless', headless: true, tmuxPane: null, tmuxWindow: null }),
+    session({ id: 'outside-tmux', tmuxPane: null, tmuxWindow: null }),
     session({ id: 'child', headless: true, tmuxPane: null, parentSession: 'ok' }),
     session({ id: 'no-file', file: null }),
     session({ id: 'gone' }),
@@ -2226,6 +2266,7 @@ export function selectForRestore(
 	const skipped: RestoreSkip[] = [];
 	for (const session of sessions) {
 		// Headless sessions (child agents, non-terminal modes) are never reopened: their parent decides.
+		// Terminal sessions that ran outside tmux have no pane to return to, so only Enter in the dashboard reopens them.
 		if (session.liveness !== "crashed" || session.alive || session.status === "done" || session.headless || !session.tmuxPane) continue;
 		if (now.getTime() - Date.parse(session.lastTurnAt ?? session.startedAt) > RESTORE_WINDOW_MS) continue;
 		if (!session.file || !fileExists(session.file)) {
@@ -4891,11 +4932,11 @@ The same features are available from the shell through `bin/work.ts` (`add`, `li
 Directly before the paragraph that begins ``Data lives in``, add:
 
 ````markdown
-**Sessions.** Every Pi session registers itself in the work database automatically: its pane, window, file, and status. A run marks it `working`. When the run ends, it becomes `needs-me` with the last line of the reply as its note, unless the agent called the static `session_status` tool to declare `needs-me`, `waiting-external`, or `done` with a note. Sessions link to items automatically from `PI_WORK_ITEM` (set by `/task` when the request names an item), from PR head branches and Jira keys in the branch name, or from another session in the same worktree. Child agents (`PI_WORK_PARENT_SESSION`, or any non-terminal mode) register as headless, and appear only under their parent.
+**Sessions.** Pi sessions register themselves in the work database automatically: their pane, window, file, and status. A run marks it `working`. When the run ends, it becomes `needs-me` with the last line of the reply as its note, unless the agent called the static `session_status` tool to declare `needs-me`, `waiting-external`, or `done` with a note. Sessions link to items automatically from `PI_WORK_ITEM` (set by `/task` when the request names an item), from PR head branches and Jira keys in the branch name, or from another session in the same worktree. Terminal sessions always register as top-level sessions, with no pane when they run outside tmux. `rpc` sessions register as headless. `print` and `json` runs register only as child agents, when `PI_WORK_PARENT_SESSION` names their parent. Children appear only under their parent.
 
 **Dashboard.** `/dash` (or `work dash` in a terminal) opens a full-screen dashboard that leads with Decisions: sessions waiting on you, oldest first, plus pending triage. Waiting, Working, and Other sessions follow. Keys are vim-style (`j`/`k`, `gg`/`G`, `Ctrl-d`/`Ctrl-u`, `Tab`, `/` to filter, `?` for help). `Enter` jumps to a session's pane and closes the popup, reopens a crashed or closed session, opens triage, or shows a child's read-only transcript. `L` links a session to an item, `x` then `y` stops a child agent, and `D` then `y` deletes a closed record. A tmux binding such as `bind D display-popup -E -w 90% -h 90% 'work dash'` needs the wrapper script mentioned above.
 
-**Restore.** After a reboot, `work restore --auto` (for example from `@resurrect-hook-post-restore-all`) reopens crashed top-level sessions from the last 7 days that are not `done`. It types `pi --session <file>` into a matching restored shell pane, splits the window, or opens a new window. It runs at most once per boot, and the dashboard runs the same logic when it opens. `work restore --dry-run` prints the plan.
+**Restore.** After a reboot, `work restore --auto` (for example from `@resurrect-hook-post-restore-all`) reopens crashed terminal sessions that ran in tmux, from the last 7 days, and are not `done`. It types `pi --session <file>` into a matching restored shell pane, splits the window, or opens a new window. It runs at most once per boot, and the dashboard runs the same logic when it opens. `work restore --dry-run` prints the plan.
 ````
 
 - [ ] **Step 2: Run the release gates**
