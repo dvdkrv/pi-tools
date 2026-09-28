@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { load, memoryRuntime } from './helpers.mjs';
 
 const { createWorkExtension } = await load('extensions/work.ts');
@@ -8,7 +9,7 @@ function setup(runtime, env = {}) {
   const commands = new Map();
   const tools = new Map();
   const events = new Map();
-  createWorkExtension({ runtime: () => runtime, repoFromCwd: () => 'payments-api', env })({
+  createWorkExtension({ runtime: () => runtime, repoFromCwd: () => 'payments-api', env, git: () => { throw new Error('not a git repository'); }, signals: new EventEmitter() })({
     registerCommand(name, definition) { commands.set(name, definition.handler); },
     registerTool(definition) { tools.set(definition.name, definition); },
     on(name, handler) { events.set(name, handler); },
@@ -24,7 +25,7 @@ function context() {
       cwd: '/src/payments-api',
       mode: 'tui',
       hasUI: true,
-      sessionManager: { getSessionId: () => 'session-1' },
+      sessionManager: { getSessionId: () => 'session-1', getSessionFile: () => undefined, getSessionName: () => undefined },
       ui: { notify: (message, level) => notes.push({ message, level }), setStatus: (key, value) => statuses.push({ key, value }) },
     },
     notes,

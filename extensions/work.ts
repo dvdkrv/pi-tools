@@ -1,3 +1,4 @@
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { captureItem } from "../src/work/capture.ts";
@@ -6,23 +7,33 @@ import type { TmuxRunner } from "../src/work/planner.ts";
 import { defaultTmux, launchPlanner, PLANNER_ENV } from "../src/work/planner.ts";
 import { registerPlannerTools } from "../src/work/planner-tools.ts";
 import { proposeCandidate } from "../src/work/proposals.ts";
-import { repoFromCwd } from "../src/work/rules.ts";
+import type { GitRunner } from "../src/work/rules.ts";
+import { defaultGit, repoFromCwd } from "../src/work/rules.ts";
 import type { Runtime } from "../src/work/runtime.ts";
 import { openRuntime } from "../src/work/runtime.ts";
 import { errorMessage } from "../src/work/secrets.ts";
+import type { SignalSource } from "../src/work/session-tracker.ts";
+import { createSessionTracker, shutdownIsClean, watchSignals } from "../src/work/session-tracker.ts";
 import { syncAll } from "../src/work/sync.ts";
+import { tmuxRunner } from "../src/work/tmux.ts";
 import { openCandidates } from "../src/work/triage.ts";
 import type { TriageUiContext } from "../src/work/triage-ui.ts";
 import { runTriageUi } from "../src/work/triage-ui.ts";
+import { DECLARED_STATUSES } from "../src/work/types.ts";
 
 export type WorkExtensionOptions = {
 	runtime?: () => Runtime;
 	repoFromCwd?: (cwd: string) => string | undefined;
 	env?: NodeJS.ProcessEnv;
 	tmux?: TmuxRunner;
+	git?: GitRunner;
+	pid?: number;
+	signals?: SignalSource;
 };
 
 export const PROPOSE_DESCRIPTION = "Propose a follow-up for the user's work triage inbox. Use only for work outside your current task's scope, or for work you would otherwise leave as \"not done yet\" at the end of the session. Do not propose normal progress on your own task. The user reviews every proposal; this tool cannot create items, change status, or contact Jira.";
+
+export const SESSION_STATUS_DESCRIPTION = "Declare this session's state as your final action in a turn: `needs-me` when you are asking the user a question or need a decision (note: the question), `waiting-external` when blocked on CI, review, a deploy, or another person (note: what and why), `done` when the task is complete (note: one-line outcome). Call at most once per turn.";
 
 type StatusContext = { ui: { setStatus: (key: string, text: string | undefined) => void } };
 
@@ -31,6 +42,19 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		let runtime: Runtime | undefined;
 		const rt = (): Runtime => (runtime ??= (options.runtime ?? (() => openRuntime()))());
 		const repoOf = options.repoFromCwd ?? ((cwd: string) => repoFromCwd(cwd));
+		const env = options.env ?? process.env;
+		const sessionTmux = options.tmux ?? tmuxRunner();
+		let warn: (message: string) => void = () => {};
+		const tracker = createSessionTracker({
+			store: () => rt().store,
+			pid: options.pid ?? process.pid,
+			env,
+			tmux: sessionTmux,
+			git: options.git ?? defaultGit,
+			warn: (message) => warn(message),
+		});
+		let signalled = false;
+		let unwatch: (() => void) | undefined;
 
 		const refreshBadge = (ctx: StatusContext): void => {
 			try {
@@ -83,6 +107,21 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			},
 		});
 
+		pi.registerTool({
+			name: "session_status",
+			label: "Session Status",
+			description: SESSION_STATUS_DESCRIPTION,
+			parameters: Type.Object({
+				status: StringEnum([...DECLARED_STATUSES] as const),
+				note: Type.String({ minLength: 1, maxLength: 200 }),
+			}),
+			async execute(_toolCallId, params) {
+				const recorded = tracker.declare(params.status, params.note);
+				const text = recorded ? `Recorded ${params.status}.` : "Session status is not being recorded for this session.";
+				return { content: [{ type: "text", text }], details: { recorded } };
+			},
+		});
+
 		pi.registerCommand("triage", {
 			description: "Review the work triage inbox",
 			handler: async (_args, ctx) => {
@@ -95,7 +134,6 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			},
 		});
 
-		const env = options.env ?? process.env;
 		if (env[PLANNER_ENV] === "1") registerPlannerTools(pi, rt);
 
 		pi.registerCommand("today", {
@@ -115,7 +153,30 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			},
 		});
 
-		pi.on("session_start", async (_event, ctx) => refreshBadge(ctx));
+		pi.on("session_start", async (_event, ctx) => {
+			refreshBadge(ctx);
+			warn = (message) => ctx.ui.notify(message, "warning");
+			unwatch ??= watchSignals(options.signals ?? (process as unknown as SignalSource), () => {
+				signalled = true;
+			});
+			tracker.start({
+				id: ctx.sessionManager.getSessionId(),
+				file: ctx.sessionManager.getSessionFile() ?? null,
+				cwd: ctx.cwd,
+				name: ctx.sessionManager.getSessionName() ?? null,
+				mode: ctx.mode,
+			});
+		});
+		pi.on("agent_start", async () => tracker.agentStart());
+		pi.on("agent_end", async (event) => tracker.agentEnd(event.messages));
+		pi.on("session_info_changed", async (event) => tracker.rename(event.name ?? null));
+		pi.on("session_shutdown", async (event) => {
+			// Pi's own signal handler starts shutdown before this extension's listener runs; yield once so it can.
+			await Promise.resolve();
+			tracker.shutdown(shutdownIsClean({ reason: event.reason, signalled, pane: tracker.pane, tmux: sessionTmux }));
+			unwatch?.();
+			unwatch = undefined;
+		});
 	};
 }
 
