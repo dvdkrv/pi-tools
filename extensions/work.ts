@@ -1,10 +1,13 @@
+import { spawn } from "node:child_process";
+import { basename } from "node:path";
+import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { captureItem } from "../src/work/capture.ts";
 import { expandHome } from "../src/work/config.ts";
 import type { TmuxRunner } from "../src/work/planner.ts";
-import { defaultTmux, launchPlanner, PLANNER_ENV } from "../src/work/planner.ts";
+import { defaultTmux, launchPlanner, PLANNER_ENV, shellQuote } from "../src/work/planner.ts";
 import { registerPlannerTools } from "../src/work/planner-tools.ts";
 import { proposeCandidate } from "../src/work/proposals.ts";
 import type { GitRunner } from "../src/work/rules.ts";
@@ -15,7 +18,7 @@ import { errorMessage } from "../src/work/secrets.ts";
 import type { SignalSource } from "../src/work/session-tracker.ts";
 import { createSessionTracker, shutdownIsClean, watchSignals } from "../src/work/session-tracker.ts";
 import { syncAll } from "../src/work/sync.ts";
-import { tmuxRunner } from "../src/work/tmux.ts";
+import { popupArgs, tmuxRunner } from "../src/work/tmux.ts";
 import { openCandidates } from "../src/work/triage.ts";
 import type { TriageUiContext } from "../src/work/triage-ui.ts";
 import { runTriageUi } from "../src/work/triage-ui.ts";
@@ -29,11 +32,24 @@ export type WorkExtensionOptions = {
 	git?: GitRunner;
 	pid?: number;
 	signals?: SignalSource;
+	popup?: (args: string[]) => void;
 };
 
 export const PROPOSE_DESCRIPTION = "Propose a follow-up for the user's work triage inbox. Use only for work outside your current task's scope, or for work you would otherwise leave as \"not done yet\" at the end of the session. Do not propose normal progress on your own task. The user reviews every proposal; this tool cannot create items, change status, or contact Jira.";
 
 export const SESSION_STATUS_DESCRIPTION = "Declare this session's state as your final action in a turn: `needs-me` when you are asking the user a question or need a decision (note: the question), `waiting-external` when blocked on CI, review, a deploy, or another person (note: what and why), `done` when the task is complete (note: one-line outcome). Call at most once per turn.";
+
+const WORK_BIN = fileURLToPath(new URL("../bin/work.ts", import.meta.url));
+
+// Aliases do not reach tmux popups, so the popup runs Node and bin/work.ts by absolute path.
+export function dashCommand(execPath: string = process.execPath): string {
+	const node = /^node(\.exe)?$/.test(basename(execPath)) ? execPath : "node";
+	return `${shellQuote(node)} ${shellQuote(WORK_BIN)} dash`;
+}
+
+function openPopup(args: string[]): void {
+	spawn("tmux", args, { stdio: "ignore", detached: true }).unref();
+}
 
 type StatusContext = { ui: { setStatus: (key: string, text: string | undefined) => void } };
 
@@ -147,6 +163,21 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 					const result = launchPlanner({ store: r.store, cwd: expandHome(r.config.plannerCwd ?? "~"), env, tmux: options.tmux ?? defaultTmux, now: r.store.clock() });
 					ctx.ui.notify(result.message, "info");
 					refreshBadge(ctx);
+				} catch (error) {
+					ctx.ui.notify(errorMessage(error), "error");
+				}
+			},
+		});
+
+		pi.registerCommand("dash", {
+			description: "Open the work dashboard in a tmux popup",
+			handler: async (_args, ctx) => {
+				if (!env.TMUX) {
+					ctx.ui.notify("/dash needs tmux; run `work dash` in a terminal instead", "warning");
+					return;
+				}
+				try {
+					(options.popup ?? openPopup)(popupArgs(dashCommand()));
 				} catch (error) {
 					ctx.ui.notify(errorMessage(error), "error");
 				}

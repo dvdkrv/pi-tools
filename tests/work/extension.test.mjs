@@ -83,3 +83,26 @@ test('/triage refuses non-interactive modes', async () => {
   await commands.get('triage')('', c.ctx);
   assert.match(c.notes[0].message, /work triage/);
 });
+
+test('/dash opens the dashboard in a tmux popup, and warns outside tmux', async () => {
+  const { dashCommand } = await load('extensions/work.ts');
+  const rt = await memoryRuntime();
+  const popups = [];
+  const commands = new Map();
+  const make = (env) => createWorkExtension({ runtime: () => rt, env, git: () => { throw new Error('not a git repository'); }, signals: new EventEmitter(), popup: (args) => popups.push(args) })({
+    registerCommand(name, definition) { commands.set(name, definition.handler); },
+    registerTool() {},
+    on() {},
+  });
+  const c = context();
+  make({});
+  await commands.get('dash')('', c.ctx);
+  assert.match(c.notes.at(-1).message, /work dash/);
+  assert.equal(popups.length, 0);
+  make({ TMUX: '/tmp/tmux-1000/default,1,0' });
+  await commands.get('dash')('', c.ctx);
+  assert.deepEqual(popups[0].slice(0, 6), ['display-popup', '-E', '-w', '90%', '-h', '90%']);
+  assert.match(popups[0][6], /bin\/work\.ts' dash$/);
+  assert.match(dashCommand('/opt/pi/bin/pi'), /^'node' '.*bin\/work\.ts' dash$/);
+  assert.match(dashCommand('/usr/local/bin/node'), /^'\/usr\/local\/bin\/node' /);
+});

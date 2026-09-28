@@ -2,6 +2,9 @@ import { exportJsonl, importJsonl, writeRotatingBackup } from "./backup.ts";
 import { captureItem, resolveDue } from "./capture.ts";
 import { cliPromote, runCliTriage } from "./cli-triage.ts";
 import { expandHome } from "./config.ts";
+import { runDash } from "./dash/app.ts";
+import type { Terminal } from "./dash/terminal.ts";
+import { processTerminal } from "./dash/terminal.ts";
 import type { PidReaders } from "./liveness.ts";
 import type { TmuxRunner } from "./planner.ts";
 import { defaultTmux, launchPlanner } from "./planner.ts";
@@ -27,6 +30,7 @@ export type CliDeps = {
 	tmux?: TmuxRunner;
 	readers?: PidReaders;
 	bootId?: () => string | undefined;
+	terminal?: Terminal;
 };
 export type CliCommand = { usage: string; run: (args: string[], deps: CliDeps) => Promise<number> };
 
@@ -303,6 +307,22 @@ const restoreCommand: CliCommand = {
 	},
 };
 
+const dash: CliCommand = {
+	usage: "dash                                 Sessions and jobs dashboard (full screen; tmux popup via /dash)",
+	async run(_args, deps) {
+		const result = await runDash({
+			runtime: deps.runtime(),
+			terminal: deps.terminal ?? processTerminal(),
+			tmux: deps.tmux ?? tmuxRunner(),
+			insideTmux: Boolean(deps.env.TMUX),
+			readers: deps.readers,
+			bootId: deps.bootId,
+		});
+		if (result.print) deps.io.out(result.print);
+		return 0;
+	},
+};
+
 const today: CliCommand = {
 	usage: "today                                Sync, triage, and open today's planner",
 	async run(_args, deps) {
@@ -318,7 +338,7 @@ const today: CliCommand = {
 };
 
 export const COMMANDS: Record<string, CliCommand> = {
-	add, list, show, set, project, sync, triage: triageCommand, today, promote, undismiss, recap, restore: restoreCommand, export: exportCommand, import: importCommand,
+	add, list, show, set, project, sync, triage: triageCommand, today, promote, undismiss, recap, restore: restoreCommand, dash, export: exportCommand, import: importCommand,
 };
 
 export function usage(): string {
