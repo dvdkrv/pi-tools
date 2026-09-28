@@ -137,10 +137,14 @@ export function buildKickoffPrompt(input: {
 	return `Goal: ${input.goal}\n\nRepository: ${input.repo.alias}\nPath: ${input.repo.root}\nOriginal request: ${input.originalRequest}${baseLine}\n\nContext and constraints:\n${input.kickoffPrompt}\n\nUse the relevant Pi skills before coding. Start by inspecting the repository context, clarify only if the goal is ambiguous, and verify changes with the appropriate tests before reporting completion.`;
 }
 
+export function workItemIn(request: string): string | undefined {
+	return /\bW-\d+\b/.exec(request)?.[0];
+}
+
 export function buildTaskLaunchCommand(
 	worktree: { name: string; path: string },
 	prompt: string,
-	options: { split: boolean; insideTmux: boolean },
+	options: { split: boolean; insideTmux: boolean; workItem?: string },
 ): ReturnType<typeof tmuxPiLaunchCommand> {
 	return tmuxPiLaunchCommand({
 		name: worktree.name,
@@ -149,6 +153,7 @@ export function buildTaskLaunchCommand(
 		insideTmux: options.insideTmux,
 		split: options.split,
 		autoCleanup: true,
+		env: options.workItem ? { PI_WORK_ITEM: options.workItem } : undefined,
 	});
 }
 
@@ -292,7 +297,7 @@ async function runTaskCommand(args: string, ctx: MinimalTaskContext): Promise<vo
 
 	try {
 		const worktree = ensureWorktree(repo.root, inferred.worktreeName, { baseRef: inferred.baseRef, defaultBase: "remoteDefault" });
-		const launch = buildTaskLaunchCommand(worktree, kickoffPrompt, { split: parsedArgs.split, insideTmux: Boolean(process.env.TMUX) });
+		const launch = buildTaskLaunchCommand(worktree, kickoffPrompt, { split: parsedArgs.split, insideTmux: Boolean(process.env.TMUX), workItem: workItemIn(request) });
 		execFileSync(launch.command, launch.args, { encoding: "utf8" });
 		ctx.ui.notify(`${worktree.created ? "Created" : "Using"} ${repo.alias} / ${worktree.name}. ${launch.description}`, "info");
 	} catch (error) {

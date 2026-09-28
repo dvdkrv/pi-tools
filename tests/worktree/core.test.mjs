@@ -226,3 +226,14 @@ test('ensureWorktree reuses only a registered worktree on the expected branch', 
   assert.equal(reused.path, created.path);
   assert.equal(reused.branch, 'worktree-reusable');
 });
+
+test('tmuxPiLaunchCommand prefixes shell-quoted environment variables', () => {
+  assert.equal(core.tmuxPiLaunchCommand({
+    name: 'fix-flaky',
+    path: '/repos/agent/.pi/worktrees/fix-flaky',
+    prompt: 'Fix W-7',
+    insideTmux: true,
+    autoCleanup: true,
+    env: { PI_WORK_ITEM: 'W-7' },
+  }).args.at(-1), "PI_WORKTREE_AUTO_CLEANUP=1 PI_WORK_ITEM='W-7' pi 'Fix W-7'");
+});

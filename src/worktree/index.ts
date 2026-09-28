@@ -89,13 +89,14 @@ export function tmuxLaunchCommand(info: { name: string; path: string; insideTmux
 	};
 }
 
-export function tmuxPiLaunchCommand(info: { name: string; path: string; prompt: string; insideTmux?: boolean; split?: boolean; autoCleanup?: boolean }): {
+export function tmuxPiLaunchCommand(info: { name: string; path: string; prompt: string; insideTmux?: boolean; split?: boolean; autoCleanup?: boolean; env?: Record<string, string> }): {
 	command: "tmux";
 	args: string[];
 	description: string;
 } {
 	const windowName = slugify(info.name);
-	const command = `${info.autoCleanup ? "PI_WORKTREE_AUTO_CLEANUP=1 " : ""}pi ${shellQuote(info.prompt)}`;
+	const envPrefix = Object.entries(info.env ?? {}).map(([key, value]) => `${key}=${shellQuote(value)} `).join("");
+	const command = `${info.autoCleanup ? "PI_WORKTREE_AUTO_CLEANUP=1 " : ""}${envPrefix}pi ${shellQuote(info.prompt)}`;
 	if (info.insideTmux && info.split) {
 		return {
 			command: "tmux",

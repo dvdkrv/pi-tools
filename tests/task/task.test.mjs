@@ -125,3 +125,10 @@ test('reviewInputAction maps Enter E and Escape', () => {
   assert.deepEqual(task.reviewInputAction('\u001b'), { type: 'cancel' });
   assert.equal(task.reviewInputAction('x'), undefined);
 });
+
+test('a request that names a work item launches the session with PI_WORK_ITEM', () => {
+  assert.equal(task.workItemIn('continue W-12, then W-3'), 'W-12');
+  assert.equal(task.workItemIn('no item here'), undefined);
+  const launch = task.buildTaskLaunchCommand({ name: 'fix-flaky', path: '/repo/.pi/worktrees/fix-flaky' }, 'Fix flaky test', { split: false, insideTmux: true, workItem: 'W-12' });
+  assert.equal(launch.args.at(-1), "PI_WORKTREE_AUTO_CLEANUP=1 PI_WORK_ITEM='W-12' pi 'Fix flaky test'");
+});
