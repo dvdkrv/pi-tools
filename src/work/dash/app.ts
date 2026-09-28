@@ -16,6 +16,7 @@ import { runTriageAction, TRIAGE_ACTIONS } from "../triage-actions.ts";
 import { candidateLabel, candidateSummary, openCandidates } from "../triage.ts";
 import type { Candidate, Item, Job } from "../types.ts";
 import { OPEN_ITEM_STATUSES } from "../types.ts";
+import { recordUsage } from "../usage.ts";
 import type { DashModel, DashRow, SessionEntry } from "./model.ts";
 import { allRows, buildDashModel, loadSessions } from "./model.ts";
 import type { Terminal } from "./terminal.ts";
@@ -84,6 +85,9 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 	const kill = deps.kill ?? ((pid: number, signal: NodeJS.Signals) => {
 		process.kill(pid, signal);
 	});
+	const track = (action: string, context: Record<string, unknown> = {}): void => recordUsage(deps.runtime, "dash", action, context);
+	const openedAt = store.clock().getTime();
+	let moves = 0;
 	let sessions: SessionEntry[] = [];
 	let model: DashModel = buildDashModel({ sessions, triageCount: 0, now: store.clock() });
 	let panes: TmuxPane[] | undefined;
@@ -156,6 +160,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		closed = true;
 		if (timer) clearInterval(timer);
 		checkAbort.abort();
+		track("close", { moves, seconds: Math.round((store.clock().getTime() - openedAt) / 1000) });
 		term.stop();
 		resolveRun(result);
 	}
@@ -246,6 +251,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 	}
 
 	function jump(pane: string): void {
+		track("jump");
 		const result = jumpToPane(deps.tmux, pane, deps.insideTmux);
 		finish(result.kind === "print" ? { print: result.command } : {});
 	}
@@ -256,6 +262,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 			return;
 		}
 		const text = formatTranscript(readTranscript(session.file));
+		track("transcript");
 		await ask<void>((resolve) => messageBox(`Transcript: ${session.name ?? session.id} (read-only)`, text, resolve, { atEnd: true }));
 	}
 
@@ -265,6 +272,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 			message = "Triage inbox is empty";
 			return;
 		}
+		track("triage");
 		triage = { candidates, index: 0, keys: INITIAL_KEY_STATE };
 	}
 
@@ -288,6 +296,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		}
 		if (row.kind === "job" || row.kind === "alert") {
 			const job = row.job;
+			track("details");
 			await ask<void>((resolve) => messageBox(`Job ${job.id}`, jobDetails(store, job, store.clock()), resolve));
 			return;
 		}
@@ -305,12 +314,14 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 			finish({ print: `cd ${shellQuote(session.cwd)} && ${deps.pi ?? "pi"} --session ${shellQuote(session.file)}` });
 			return;
 		}
+		track("reopen");
 		jump(reopenSession(store, session, deps.tmux, panes, { fileExists: deps.fileExists, pi: deps.pi }));
 	}
 
 	async function runAction(key: string): Promise<void> {
 		if (key === "R") {
 			message = "Refreshed";
+			track("refresh");
 			backgroundCheck();
 			return;
 		}
@@ -321,10 +332,12 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 				return;
 			}
 			message = `Checking ${job.id}…`;
+			track("check");
 			backgroundCheck([job]);
 			return;
 		}
 		if (key === "?") {
+			track("help");
 			await ask<void>((resolve) => messageBox("Keys", HELP_TEXT, resolve));
 			return;
 		}
@@ -337,6 +350,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 			const item = await ask<Item | undefined>((resolve) => fuzzyPicker("Link session to item", store.listItems({ statuses: OPEN_ITEM_STATUSES }), itemLabel, resolve));
 			if (!item) return;
 			store.linkSession(session.id, item.id, "manual", "user");
+			track("link");
 			message = `Linked to ${item.id}`;
 		}
 	}
@@ -364,9 +378,11 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		if (job) {
 			if (key === "x") {
 				const stopped = await stopJob(store, job, "user", deps.jobs);
+				track("stop", { target: "job" });
 				message = `Stopped ${stopped.job.id} ${stopped.job.name}${stopped.note}`;
 			} else {
 				store.deleteJob(job.id, "user");
+				track("delete", { target: "job" });
 				message = `Deleted ${job.id}`;
 			}
 			return;
@@ -378,12 +394,14 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		}
 		if (key === "D") {
 			store.deleteSession(session.id);
+			track("delete", { target: "session" });
 			message = "Session record deleted";
 			return;
 		}
 		if (key === "x" && session.pid) {
 			try {
 				kill(session.pid, "SIGTERM");
+				track("stop", { target: "child" });
 				message = `Sent SIGTERM to ${session.name ?? session.id}`;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
@@ -393,15 +411,18 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 	}
 
 	function mainKey(key: string): void {
+		const wasEditing = keys.editing;
 		const step = keyStep(keys, key, { actions: MAIN_ACTIONS, confirm: CONFIRM_ACTIONS, filter: true });
 		keys = step.state;
 		const { action } = step;
 		switch (action.type) {
 			case "move":
 				move(action.move);
+				moves++;
 				message = "";
 				break;
 			case "filter": {
+				if (!wasEditing && action.editing) track("filter");
 				const rows = visibleRows();
 				if (!rows.some((row) => row.key === selected)) selected = rows[0]?.key ?? null;
 				break;
@@ -479,6 +500,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		if (selectForRestore(sessions, store.clock(), deps.fileExists).selected.length === 0) return;
 		const report = runRestore("auto", { store, tmux: deps.tmux, readers: deps.readers, bootId: deps.bootId, fileExists: deps.fileExists, pi: deps.pi });
 		if (!report.ran) return;
+		track("restore", { placed: report.placed.length, failed: report.failed.length });
 		const count = report.placed.length;
 		message = `Restored ${count} crashed session${count === 1 ? "" : "s"}${report.failed.length ? `; ${report.failed.length} failed` : ""}`;
 		reload();
@@ -492,6 +514,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		}
 	});
 	term.onResize(render);
+	track("open");
 	term.start();
 	try {
 		reload();

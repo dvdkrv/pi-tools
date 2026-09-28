@@ -18,10 +18,12 @@ export type TrackerDeps = {
 	tmux: TmuxRunner;
 	git: GitRunner;
 	warn: (message: string) => void;
+	onResponded?: (seconds: number) => void;
 };
 export type SessionTracker = {
 	readonly pane: string | null;
 	start(info: SessionInfo): void;
+	input(text: string, source: string): void;
 	agentStart(): void;
 	declare(status: DeclaredStatus, note: string): boolean;
 	agentEnd(messages: readonly unknown[]): void;
@@ -80,6 +82,14 @@ export function createSessionTracker(deps: TrackerDeps): SessionTracker {
 					headless,
 				});
 				autoLinkSession(store, sessionId, linkDeps);
+			});
+		},
+		input(text, source) {
+			if (source === "extension" || text.trimStart().startsWith("/")) return;
+			guard((store, sessionId) => {
+				const session = store.getSession(sessionId);
+				if (session?.status !== "needs-me") return;
+				deps.onResponded?.(Math.max(0, Math.round((store.clock().getTime() - Date.parse(session.statusAt)) / 1000)));
 			});
 		},
 		agentStart() {

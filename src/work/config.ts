@@ -7,7 +7,7 @@ export type JiraConfig = { site: string; email: string; secretCommand: string[];
 export type GithubAccount = { user: string; orgs: string[] };
 export type ProjectConfig = { slug: string; title: string; jiraEpic?: string; notesPath?: string };
 export type Rule = { project: string; repo?: string; jiraEpic?: string; jiraProject?: string };
-export type WorkConfig = { jira?: JiraConfig; github: { accounts: GithubAccount[] }; projects: ProjectConfig[]; rules: Rule[]; plannerCwd?: string };
+export type WorkConfig = { jira?: JiraConfig; github: { accounts: GithubAccount[] }; projects: ProjectConfig[]; rules: Rule[]; plannerCwd?: string; usage?: boolean };
 export type LoadedConfig = { config: WorkConfig; warnings: string[] };
 
 export function emptyConfig(): WorkConfig {
@@ -112,6 +112,10 @@ export function parseWorkConfig(raw: string): LoadedConfig {
 	if (isRecord(data.planner)) {
 		const cwd = str(data.planner.cwd);
 		if (cwd) config.plannerCwd = cwd;
+	}
+	if (data.usage !== undefined) {
+		if (typeof data.usage === "boolean") config.usage = data.usage;
+		else warnings.push("usage must be true or false; usage tracking stays on");
 	}
 	return { config, warnings };
 }

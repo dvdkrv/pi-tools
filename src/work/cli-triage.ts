@@ -13,6 +13,7 @@ import {
 	TriageError,
 } from "./triage.ts";
 import type { Candidate } from "./types.ts";
+import { recordTriage } from "./usage.ts";
 
 const YES = /^y(?:es)?$/i;
 
@@ -28,11 +29,11 @@ export async function cliPromote(rt: Runtime, io: CliIo, itemId: string, yes: bo
 	io.out(`Created ${link.key.slice("jira:".length)} for ${itemId}`);
 }
 
-async function cliApplyJiraUpdate(rt: Runtime, io: CliIo, candidate: Candidate): Promise<void> {
+async function cliApplyJiraUpdate(rt: Runtime, io: CliIo, candidate: Candidate): Promise<boolean> {
 	if (!rt.jira) throw new TriageError("Jira is not configured");
 	if (!YES.test((await io.ask(`Apply "${candidate.title}" in Jira? [y/N] > `)).trim())) {
 		io.out("Cancelled");
-		return;
+		return false;
 	}
 	const result = await applyJiraUpdate(rt.store, candidate.id, rt.jira, async (options) => {
 		options.forEach((option, index) => io.out(`  ${index + 1}. ${option.name} (${option.category})`));
@@ -40,6 +41,7 @@ async function cliApplyJiraUpdate(rt: Runtime, io: CliIo, candidate: Candidate):
 		return Number.isInteger(choice) && choice >= 1 ? options[choice - 1] : undefined;
 	});
 	io.out(result === "applied" ? `Updated ${String(candidate.payload.ticket)}` : "Cancelled");
+	return result === "applied";
 }
 
 async function askEdits(rt: Runtime, io: CliIo, candidate: Candidate): Promise<{ title?: string; project?: string }> {
@@ -75,11 +77,13 @@ export async function runCliTriage(rt: Runtime, io: CliIo): Promise<number> {
 				case "d":
 					dismissCandidate(rt.store, candidate.id);
 					io.out("Dismissed");
+					recordTriage(rt, "dismiss", candidate);
 					break;
 				case "z": {
 					const days = (await io.ask("Snooze days [3] > ")).trim();
 					snoozeCandidate(rt.store, candidate.id, days ? Number(days) : 3);
 					io.out("Snoozed");
+					recordTriage(rt, "snooze", candidate);
 					break;
 				}
 				case "m": {
@@ -87,22 +91,25 @@ export async function runCliTriage(rt: Runtime, io: CliIo): Promise<number> {
 					const target = (await io.ask("Merge into item (W-n) > ")).trim();
 					mergeCandidate(rt.store, candidate.id, target);
 					io.out(`Merged into ${target}`);
+					recordTriage(rt, "merge", candidate);
 					break;
 				}
 				case "A": {
 					if (isJira) throw new TriageError("Jira updates can't be bulk accepted");
 					io.out(`Accepted ${acceptAllFromSource(rt.store, candidate.source).length} from ${candidate.source}`);
+					recordTriage(rt, "accept-all", candidate);
 					break;
 				}
 				case "a":
 				case "p": {
 					if (isJira) {
 						if (answer === "p") throw new TriageError("Use a to apply a Jira update");
-						await cliApplyJiraUpdate(rt, io, candidate);
+						if (await cliApplyJiraUpdate(rt, io, candidate)) recordTriage(rt, "apply", candidate);
 						break;
 					}
 					const edits = candidate.kind === "new-item" ? await askEdits(rt, io, candidate) : {};
 					const item = acceptCandidate(rt.store, candidate.id, edits);
+					recordTriage(rt, answer === "p" ? "promote" : "accept", candidate);
 					io.out(candidate.kind === "attach-link" ? `Linked to ${item.id}` : `${item.id} added to ${item.project}`);
 					if (answer === "p") await cliPromote(rt, io, item.id, false);
 					break;

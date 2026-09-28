@@ -8,6 +8,7 @@ import type { ItemPatch, WorkStore } from "./store.ts";
 import { WorkStoreError } from "./store.ts";
 import type { Item, ItemStatus, Plan, WaitingOn } from "./types.ts";
 import { ITEM_STATUSES, WAITING_ON } from "./types.ts";
+import { planFollowThrough, recordUsage } from "./usage.ts";
 
 export type PlannerUpdateParams = {
 	id: string;
@@ -127,7 +128,11 @@ export function registerPlannerTools(pi: ToolRegistrar, rt: () => Runtime): void
 		}),
 		async execute(_toolCallId, params) {
 			const r = rt();
-			return json(plannerSavePlan(r.store, params, r.store.clock()));
+			const now = r.store.clock();
+			const follow = planFollowThrough(r.store, localDate(now));
+			const plan = plannerSavePlan(r.store, params, now);
+			recordUsage(r, "planner", "save", { focus: params.focus.length, prev_focus: follow.focus, followed: follow.followed });
+			return json(plan);
 		},
 	});
 }

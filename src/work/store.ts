@@ -32,6 +32,9 @@ import type {
 	Signal,
 	SignalKind,
 	StatusSource,
+	UsageContext,
+	UsageRow,
+	UsageSurface,
 	WaitingOn,
 	WorkEvent,
 } from "./types.ts";
@@ -856,6 +859,21 @@ export class WorkStore {
 			this.run("DELETE FROM job WHERE num = ?", jobNum(id));
 			this.event(actor, `job:${id}`, "delete", { before });
 		});
+	}
+
+	// Usage (operational: no events)
+
+	recordUsage(surface: UsageSurface, action: string, context: UsageContext): void {
+		this.run("INSERT INTO usage (at, surface, action, context) VALUES (?, ?, ?, ?)", this.now(), surface, action, JSON.stringify(context));
+	}
+
+	listUsage(filter: { since?: string } = {}): UsageRow[] {
+		const rows = filter.since ? this.all("SELECT * FROM usage WHERE at >= ? ORDER BY id", filter.since) : this.all("SELECT * FROM usage ORDER BY id");
+		return rows.map((r) => ({ id: Number(r.id), at: String(r.at), surface: r.surface as UsageSurface, action: String(r.action), context: json<UsageContext>(r.context, {}) }));
+	}
+
+	pruneUsage(before: string): number {
+		return this.run("DELETE FROM usage WHERE at < ?", before).changes;
 	}
 
 	// Connector runs and meta (operational: no events)

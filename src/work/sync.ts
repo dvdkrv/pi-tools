@@ -8,6 +8,7 @@ import type { ReconcileSummary } from "./reconcile.ts";
 import { emptySummary, reconcile } from "./reconcile.ts";
 import type { WorkStore } from "./store.ts";
 import type { ConnectorResult, LinkKind } from "./types.ts";
+import { pruneUsage } from "./usage.ts";
 
 export const SYNC_TTL_MS = 10 * 60 * 1000;
 export const BACKUP_INTERVAL_MS = 60 * 60 * 1000;
@@ -29,6 +30,7 @@ export function connectorWarnings(store: WorkStore): string[] {
 export async function syncAll(store: WorkStore, config: WorkConfig, deps: SyncDeps, options: { force?: boolean } = {}): Promise<SyncReport> {
 	const now = store.clock();
 	const report: SyncReport = { ran: [], cached: [], disabled: [], totals: emptySummary(), warnings: [] };
+	pruneUsage(store, now);
 	if (deps.backupDir) {
 		const last = store.getMeta("backup:last");
 		if (!last || now.getTime() - Date.parse(last) >= BACKUP_INTERVAL_MS) {

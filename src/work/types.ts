@@ -217,3 +217,7 @@ export type JobInput = {
 	ownerSession?: string | null;
 	itemId?: string | null;
 };
+
+export type UsageSurface = "dash" | "cli" | "pi" | "triage" | "planner";
+export type UsageContext = Record<string, number | boolean | string>;
+export type UsageRow = { id: number; at: string; surface: UsageSurface; action: string; context: UsageContext };

@@ -20,6 +20,7 @@ import { tmuxRunner } from "./tmux.ts";
 import { openCandidates } from "./triage.ts";
 import type { Item, ItemStatus, Job, JobKind, WaitingOn } from "./types.ts";
 import { ITEM_STATUSES, WAITING_ON } from "./types.ts";
+import { recordUsage } from "./usage.ts";
 
 export type CliIo = { out(text: string): void; err(text: string): void; ask(question: string): Promise<string> };
 export type CliDeps = {
@@ -315,6 +316,7 @@ const restoreCommand: CliCommand = {
 		const mode: RestoreMode = args.includes("--dry-run") ? "dry-run" : args.includes("--auto") ? "auto" : "manual";
 		const rt = deps.runtime();
 		const report = runRestore(mode, { store: rt.store, tmux: deps.tmux ?? tmuxRunner(), readers: deps.readers, bootId: deps.bootId });
+		recordUsage(rt, "cli", "restore.run", { mode, ran: report.ran, placed: report.placed.length, skipped: report.skipped.length, failed: report.failed.length });
 		deps.io.out(formatRestoreReport(report));
 		return 0;
 	},
@@ -416,10 +418,17 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 		deps.io.out(usage());
 		return 1;
 	}
+	let code: number;
 	try {
-		return await command.run(args, deps);
+		code = await command.run(args, deps);
 	} catch (error) {
 		deps.io.err(error instanceof Error ? error.message : String(error));
-		return 1;
+		code = 1;
 	}
+	try {
+		recordUsage(deps.runtime(), "cli", name, { exit: code });
+	} catch {
+		// Usage is best effort; the runtime may not open (for example, a newer schema).
+	}
+	return code;
 }

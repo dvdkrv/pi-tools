@@ -24,6 +24,7 @@ import { openCandidates } from "../src/work/triage.ts";
 import type { TriageUiContext } from "../src/work/triage-ui.ts";
 import { runTriageUi } from "../src/work/triage-ui.ts";
 import { DECLARED_STATUSES, JOB_KINDS } from "../src/work/types.ts";
+import { recordUsage } from "../src/work/usage.ts";
 
 export type WorkExtensionOptions = {
 	runtime?: () => Runtime;
@@ -60,6 +61,13 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 	return function workExtension(pi: ExtensionAPI): void {
 		let runtime: Runtime | undefined;
 		const rt = (): Runtime => (runtime ??= (options.runtime ?? (() => openRuntime()))());
+		const track = (action: string, context: Record<string, unknown> = {}): void => {
+			try {
+				recordUsage(rt(), "pi", action, context);
+			} catch {
+				// Usage is best effort.
+			}
+		};
 		const repoOf = options.repoFromCwd ?? ((cwd: string) => repoFromCwd(cwd));
 		const env = options.env ?? process.env;
 		const sessionTmux = options.tmux ?? tmuxRunner();
@@ -71,6 +79,7 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			tmux: sessionTmux,
 			git: options.git ?? defaultGit,
 			warn: (message) => warn(message),
+			onResponded: (seconds) => track("session.responded", { seconds }),
 		});
 		let signalled = false;
 		let unwatch: (() => void) | undefined;
@@ -87,6 +96,7 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		pi.registerCommand("todo", {
 			description: "Capture a work item: /todo <text> [#project] [due:<date>]",
 			handler: async (args, ctx) => {
+				track("todo");
 				const text = (args ?? "").trim();
 				if (!text) {
 					ctx.ui.notify("Usage: /todo <text> [#project] [due:<date>]", "warning");
@@ -165,6 +175,7 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		pi.registerCommand("triage", {
 			description: "Review the work triage inbox",
 			handler: async (_args, ctx) => {
+				track("triage");
 				if (ctx.mode !== "tui") {
 					ctx.ui.notify("Triage needs the interactive terminal; run `work triage` in a shell", "warning");
 					return;
@@ -179,6 +190,7 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		pi.registerCommand("today", {
 			description: "Sync, triage, then open today's planner session",
 			handler: async (_args, ctx) => {
+				track("today");
 				try {
 					const r = rt();
 					const report = await syncAll(r.store, r.config, { jira: r.jira, gh: r.gh, backupDir: r.backupDir });
@@ -196,6 +208,7 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		pi.registerCommand("dash", {
 			description: "Open the work dashboard in a tmux popup",
 			handler: async (_args, ctx) => {
+				track("dash");
 				if (!env.TMUX) {
 					ctx.ui.notify("/dash needs tmux; run `work dash` in a terminal instead", "warning");
 					return;
@@ -221,6 +234,9 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 				name: ctx.sessionManager.getSessionName() ?? null,
 				mode: ctx.mode,
 			});
+		});
+		pi.on("input", async (event) => {
+			tracker.input(event.text, event.source);
 		});
 		pi.on("agent_start", async () => tracker.agentStart());
 		pi.on("agent_end", async (event) => tracker.agentEnd(event.messages));
