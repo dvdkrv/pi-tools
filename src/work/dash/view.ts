@@ -7,10 +7,15 @@ import { fit, formatAge, oneLine, sanitize, truncate, visibleWidth } from "./tex
 export type ViewState = { selected: string | null; filter: string; editing: boolean; message: string };
 export type Cells = { label: string; window: string; item: string; age: string; note: string };
 type Widths = { window: number; item: number; age: number };
+type Caps = readonly [number, number, number];
 
 export const HINTS = "j/k move · enter open · L link · D delete · / filter · ? help · q quit";
 const LABEL_WIDTH = 9;
 const GAP = "  ";
+const SESSION_CAPS: { narrow: Caps; wide: Caps } = { narrow: [16, 6, 4], wide: [28, 40, 4] };
+const JOB_CAPS: { narrow: Caps; wide: Caps } = { narrow: [20, 12, 4], wide: [32, 20, 4] };
+
+const isJobRow = (row: DashRow): boolean => row.kind === "job" || row.kind === "alert";
 
 export function sessionLabel(session: SessionEntry): string {
 	if (session.liveness !== "live") return session.liveness;
@@ -19,6 +24,17 @@ export function sessionLabel(session: SessionEntry): string {
 
 export function rowCells(row: DashRow, now: Date, wide: boolean): Cells {
 	if (row.kind === "triage") return { label: "triage", window: "", item: "", age: "", note: `${row.count} pending candidate${row.count === 1 ? "" : "s"}` };
+	if (row.kind === "job" || row.kind === "alert") {
+		const job = row.job;
+		const health = job.stoppedAt ? "stopped" : (job.lastCheckStatus ?? "unknown");
+		return {
+			label: row.kind === "alert" ? "unhealthy" : health,
+			window: oneLine(job.name),
+			item: oneLine(job.schedule ?? job.kind),
+			age: job.lastCheckAt ? formatAge(now.getTime() - Date.parse(job.lastCheckAt)) : "-",
+			note: oneLine(job.lastCheckOutput ?? ""),
+		};
+	}
 	const s = row.session;
 	const child = s.parentSession !== null;
 	const since = child || s.liveness !== "live" ? lastActivity(s) : s.statusAt;
@@ -39,21 +55,27 @@ export function filterModel(model: DashModel, filter: string): DashModel {
 	return { ...model, sections: model.sections.map((section) => ({ ...section, rows: section.rows.filter((row) => rowMatches(row, filter, model.now)) })) };
 }
 
-function widths(rows: readonly DashRow[], now: Date, wide: boolean): Widths {
-	const cells = rows.filter((row) => row.kind === "session").map((row) => rowCells(row, now, wide));
+function widths(rows: readonly DashRow[], now: Date, wide: boolean, caps: Caps): Widths {
+	const cells = rows.map((row) => rowCells(row, now, wide));
 	const max = (pick: (cell: Cells) => string, cap: number): number => Math.min(cap, Math.max(1, ...cells.map((cell) => visibleWidth(pick(cell)))));
-	return { window: max((c) => c.window, wide ? 28 : 16), item: max((c) => c.item, wide ? 40 : 6), age: max((c) => c.age, 4) };
+	return { window: max((c) => c.window, caps[0]), item: max((c) => c.item, caps[1]), age: max((c) => c.age, caps[2]) };
 }
 
-function rowText(row: DashRow, now: Date, wide: boolean, w: Widths, width: number): string {
+function rowText(row: DashRow, now: Date, wide: boolean, w: { session: Widths; job: Widths }, width: number): string {
 	const cells = rowCells(row, now, wide);
 	if (row.kind === "triage") return truncate(`${fit(cells.label, LABEL_WIDTH)}${GAP}${cells.note}`, width);
-	const indent = row.depth === 1 ? "  " : "";
-	const head = [fit(cells.label, LABEL_WIDTH), fit(cells.window, w.window), fit(cells.item, w.item), cells.age.padStart(w.age)].join(GAP);
+	const cw = isJobRow(row) ? w.job : w.session;
+	const indent = row.kind === "session" && row.depth === 1 ? "  " : "";
+	const head = [fit(cells.label, LABEL_WIDTH), fit(cells.window, cw.window), fit(cells.item, cw.item), cells.age.padStart(cw.age)].join(GAP);
 	return truncate(`${indent}${head}${GAP}${cells.note}`, width);
 }
 
 function styleRow(row: DashRow, line: string, style: Style): string {
+	if (row.kind === "alert") return style.color("red", line);
+	if (row.kind === "job") {
+		if (row.job.stoppedAt) return style.dim(line);
+		return row.job.lastCheckStatus === "unhealthy" ? style.color("red", line) : line;
+	}
 	if (row.kind !== "session") return line;
 	if (row.session.liveness === "crashed") return style.color("red", line);
 	if (row.session.liveness === "closed" || row.session.status === "done") return style.dim(line);
@@ -63,7 +85,11 @@ function styleRow(row: DashRow, line: string, style: Style): string {
 
 export function renderDash(model: DashModel, state: ViewState, width: number, height: number, style: Style): string[] {
 	const wide = width >= 120;
-	const w = widths(allRows(model), model.now, wide);
+	const all = allRows(model);
+	const w = {
+		session: widths(all.filter((row) => row.kind === "session"), model.now, wide, wide ? SESSION_CAPS.wide : SESSION_CAPS.narrow),
+		job: widths(all.filter(isJobRow), model.now, wide, wide ? JOB_CAPS.wide : JOB_CAPS.narrow),
+	};
 	const shown = filterModel(model, state.filter);
 	const body: string[] = [];
 	let selectedLine = -1;

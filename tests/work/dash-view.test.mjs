@@ -29,12 +29,13 @@ const plain = (lines) => lines.map((line) => line.trimEnd());
 
 test('sections order sessions, nest children under their parent, and drop old ended sessions', () => {
   const m = model();
-  assert.deepEqual(m.sections.map((s) => s.id), ['decisions', 'waiting', 'working', 'other']);
+  assert.deepEqual(m.sections.map((s) => s.id), ['decisions', 'waiting', 'working', 'jobs', 'other']);
   assert.deepEqual(m.sections[0].rows.map((r) => r.key), ['session:d1', 'session:c1', 'session:d2', 'triage']);
   assert.equal(m.sections[0].rows[1].depth, 1);
   assert.deepEqual(m.sections[1].rows.map((r) => r.key), ['session:w1']);
   assert.deepEqual(m.sections[2].rows, []);
-  assert.deepEqual(m.sections[3].rows.map((r) => r.key), ['session:o1', 'session:o2', 'session:o3']);
+  assert.deepEqual(m.sections[3].rows, []);
+  assert.deepEqual(m.sections[4].rows.map((r) => r.key), ['session:o1', 'session:o2', 'session:o3']);
   assert.equal(buildDashModel({ sessions: SESSIONS, triageCount: 0, now: NOW }).sections[0].rows.some((r) => r.kind === 'triage'), false);
 });
 
@@ -50,7 +51,7 @@ test('a child follows its parent into any section, and an orphaned child is list
   });
   assert.deepEqual(m.sections[0].rows, []);
   assert.deepEqual(m.sections[1].rows.map((r) => [r.key, r.depth]), [['session:p', 0], ['session:k', 1]]);
-  assert.deepEqual(m.sections[3].rows.map((r) => [r.key, r.depth]), [['session:lost', 0]]);
+  assert.deepEqual(m.sections[4].rows.map((r) => [r.key, r.depth]), [['session:lost', 0]]);
 });
 
 test('an 80-column frame', () => {
@@ -64,6 +65,7 @@ test('an 80-column frame', () => {
     'Waiting (1)',
     '  waiting    web           W-3   3h  "CI run for PR 42"',
     'Working (0)',
+    'Jobs (0)',
     'Other sessions (3)',
     '  done       docs          W-2   2h  "Published the guide"',
     '  crashed    infra         -    24h  "Which region first?"',
@@ -85,6 +87,7 @@ test('a 160-column frame shows item titles', () => {
     'Waiting (1)',
     '  waiting    web           W-3 Launch checklist             3h  "CI run for PR 42"',
     'Working (0)',
+    'Jobs (0)',
     'Other sessions (3)',
     '  done       docs          W-2 Docs refresh                 2h  "Published the guide"',
     '  crashed    infra         -                               24h  "Which region first?"',
@@ -97,7 +100,7 @@ test('a 160-column frame shows item titles', () => {
 test('ANSI styling highlights the selection and colors crashed rows', () => {
   const lines = renderDash(model(), state(), 80, 24, ansiStyle);
   assert.ok(lines[2].startsWith('\x1b[7m> needs-me'));
-  assert.ok(lines[11].startsWith('\x1b[31m  crashed'));
+  assert.ok(lines[12].startsWith('\x1b[31m  crashed'));
   assert.ok(lines.every((line) => !line.includes('\n')));
 });
 
@@ -107,6 +110,7 @@ test('the filter hides non-matching rows, matches item titles at any width, and 
     'Decisions (0)',
     'Waiting (0)',
     'Working (0)',
+    'Jobs (0)',
     'Other sessions (1)',
     '> crashed    infra         -    24h  "Which region first?"',
     HINTS,
@@ -115,7 +119,7 @@ test('the filter hides non-matching rows, matches item titles at any width, and 
   const byTitle = plain(renderDash(model(), state({ selected: null, filter: 'launch', editing: true }), 80, 24, plainStyle));
   assert.equal(byTitle[0], 'Work dashboard  /launch_');
   assert.ok(byTitle.includes('  waiting    web           W-3   3h  "CI run for PR 42"'));
-  assert.equal(byTitle.length, 8);
+  assert.equal(byTitle.length, 9);
 });
 
 test('scrolling keeps the selected row visible, and the message line is last', () => {
@@ -146,4 +150,35 @@ test('loadSessions adds liveness and the linked item', async () => {
   const [s1, s2] = loadSessions(store, [{ paneId: '%1', windowId: '@1', windowName: 'api', sessionName: 'main', path: '/src/api', command: 'node' }], readers);
   assert.deepEqual([s1.liveness, s1.itemId, s1.itemTitle], ['live', 'W-1', 'Linked work']);
   assert.deepEqual([s2.liveness, s2.itemId], ['crashed', null]);
+});
+
+const jobEntry = (overrides) => ({
+  id: 'J-1', name: 'n', kind: 'cron', ownerSession: null, itemId: null, schedule: null, pid: null, cwd: '/srv', checkCommand: null, stopCommand: null, logPath: null,
+  lastCheckAt: null, lastCheckStatus: null, lastCheckOutput: null, createdAt: ago(9000), updatedAt: ago(9000), stoppedAt: null, ...overrides,
+});
+const JOBS = [
+  jobEntry({ id: 'J-2', name: 'dev-server', kind: 'process', lastCheckAt: ago(1), lastCheckStatus: 'unhealthy', lastCheckOutput: 'connection refused' }),
+  jobEntry({ id: 'J-1', name: 'nightly-export', schedule: '0 3 * * *', lastCheckAt: ago(5), lastCheckStatus: 'healthy', lastCheckOutput: 'wrote 1204 rows' }),
+  jobEntry({ id: 'J-3', name: 'old-sync', stoppedAt: ago(60), lastCheckAt: ago(2880), lastCheckStatus: 'healthy', lastCheckOutput: 'ok' }),
+];
+
+test('unhealthy jobs are decisions, and the Jobs section uses its own columns', () => {
+  const m = buildDashModel({ sessions: [], triageCount: 0, jobs: JOBS, now: NOW });
+  assert.deepEqual(m.sections[0].rows.map((r) => r.key), ['alert:J-2']);
+  assert.deepEqual(m.sections[3].rows.map((r) => r.key), ['job:J-2', 'job:J-1', 'job:J-3']);
+  assert.deepEqual(plain(renderDash(m, state({ selected: 'alert:J-2' }), 80, 24, plainStyle)).slice(0, 10), [
+    'Work dashboard',
+    'Decisions (1)',
+    '> unhealthy  dev-server      process    1m  connection refused',
+    'Waiting (0)',
+    'Working (0)',
+    'Jobs (3)',
+    '  unhealthy  dev-server      process    1m  connection refused',
+    '  healthy    nightly-export  0 3 * * *  5m  wrote 1204 rows',
+    '  stopped    old-sync        cron       2d  ok',
+    'Other sessions (0)',
+  ]);
+  const colored = renderDash(m, state({ selected: null }), 80, 24, ansiStyle);
+  assert.ok(colored[2].startsWith('\x1b[31m'));
+  assert.ok(colored[8].startsWith('\x1b[2m'));
 });

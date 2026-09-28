@@ -61,14 +61,16 @@ async function fixture({ restored = true } = {}) {
   return { rt, store };
 }
 
-function open(rt, { insideTmux = true, kills = [] } = {}) {
+function open(rt, { insideTmux = true, kills = [], run = async () => ({ code: 0, output: 'ok', timedOut: false }) } = {}) {
   const terminal = fakeTerminal();
   const calls = [];
+  const ran = [];
   const result = runDash({
     runtime: rt, terminal, tmux: tmuxFake(calls), insideTmux, readers: alive(11, 13), style: plainStyle, refreshMs: 0,
     bootId: () => 'boot-1', fileExists: () => true, kill: (pid, signal) => kills.push([pid, signal]),
+    jobs: { run: async (command, ...rest) => { ran.push(command); return run(command, ...rest); }, pidAlive: () => true },
   });
-  return { terminal, calls, result, kills };
+  return { terminal, calls, result, kills, ran };
 }
 const actions = (calls) => calls.filter((call) => call[0] !== 'list-panes');
 
@@ -240,4 +242,76 @@ test('work dash runs through the CLI and prints jump commands outside tmux', asy
   terminal.send('\r');
   assert.equal(await code, 0);
   assert.deepEqual(io.out, ["tmux attach-session -t '%1' \\; select-window -t '%1' \\; select-pane -t '%1'"]);
+});
+
+async function jobFixture() {
+  const { rt, store } = await fixture();
+  store.registerJob({ name: 'dev-server', kind: 'process', cwd: '/src/api', pid: 4242, checkCommand: 'curl -fs localhost:8080', stopCommand: 'kill-dev', ownerSession: 'live-1' }, 'agent:live-1');
+  store.recordJobCheck('J-1', 'unhealthy', 'connection refused');
+  store.registerJob({ name: 'old-sync', kind: 'cron', cwd: '/srv' }, 'user');
+  store.recordJobCheck('J-2', 'healthy', 'ok');
+  store.markJobStopped('J-2', 'user');
+  return { rt, store };
+}
+
+test('an unhealthy job is a decision, and Enter shows its details', async () => {
+  const { rt } = await jobFixture();
+  const d = open(rt);
+  assert.match(d.terminal.screen()[4], /^ {2}unhealthy\s+dev-server\s+process\s+0s\s+connection refused$/);
+  d.terminal.send('j', 'j', '\r');
+  await tick();
+  const screen = d.terminal.screen();
+  assert.equal(screen[0], 'Job J-1');
+  assert.ok(screen.includes('check: curl -fs localhost:8080'));
+  assert.ok(screen.includes('registered by: session live-1 (window sap-rfc)'));
+  assert.deepEqual(d.ran, []);
+  d.terminal.send('q');
+  await tick();
+  d.terminal.send('q');
+  await d.result;
+});
+
+test('c checks the selected job in the background', async () => {
+  const { rt, store } = await jobFixture();
+  const d = open(rt, { run: async () => ({ code: 0, output: 'up\n', timedOut: false }) });
+  d.terminal.send('j', 'j', 'j', 'c');
+  await tick();
+  await tick();
+  assert.deepEqual(d.ran, ['curl -fs localhost:8080']);
+  assert.equal(store.getJob('J-1').lastCheckStatus, 'healthy');
+  assert.equal(d.terminal.screen().at(-1), 'J-1 healthy: up');
+  assert.equal(d.terminal.screen().some((line) => line.startsWith('  unhealthy')), false);
+  d.terminal.send('q');
+  await d.result;
+});
+
+test('x then y stops a job with its stop command; D then y deletes only stopped jobs', async () => {
+  const { rt, store } = await jobFixture();
+  const d = open(rt);
+  d.terminal.send('j', 'j', 'j', 'D');
+  assert.equal(d.terminal.screen().at(-1), 'Stop the job before deleting it');
+  d.terminal.send('x');
+  assert.match(d.terminal.screen().at(-1), /^Stop J-1 dev-server\? y to confirm/);
+  d.terminal.send('y');
+  await tick();
+  assert.deepEqual(d.ran, ['kill-dev']);
+  assert.ok(store.getJob('J-1').stoppedAt);
+  assert.equal(d.terminal.screen().at(-1), 'Stopped J-1 dev-server');
+  d.terminal.send('G', 'k', 'D', 'y');
+  await tick();
+  assert.equal(store.getJob('J-2'), undefined);
+  d.terminal.send('q');
+  await d.result;
+});
+
+test('opening the dashboard checks stale jobs in the background', async () => {
+  const { rt, store } = await jobFixture();
+  rt.store.clock.advance?.(61_000);
+  const d = open(rt, { run: async () => ({ code: 7, output: 'still down', timedOut: false }) });
+  await tick();
+  await tick();
+  assert.deepEqual(d.ran, ['curl -fs localhost:8080']);
+  assert.equal(store.getJob('J-1').lastCheckOutput, 'still down');
+  d.terminal.send('q');
+  await d.result;
 });

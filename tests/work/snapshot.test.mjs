@@ -52,3 +52,17 @@ test('nudge thresholds', () => {
   assert.equal(nudgeFor({ ...base, status: 'todo' }, 13, now), undefined);
   assert.deepEqual(nudgeFor({ ...base, status: 'doing' }, 3, now), { id: 'W-1', kind: 'doing-stale', days: 3 });
 });
+
+test('the snapshot lists active jobs with their last known status', async () => {
+  const store = await memoryStore();
+  store.registerJob({ name: 'nightly', kind: 'cron', cwd: '/srv', checkCommand: 'exit 1' }, 'user');
+  store.recordJobCheck('J-1', 'unhealthy', 'boom');
+  store.registerJob({ name: 'idle', kind: 'cron', cwd: '/srv' }, 'user');
+  store.registerJob({ name: 'gone', kind: 'cron', cwd: '/srv' }, 'user');
+  store.markJobStopped('J-3', 'user');
+  const snap = buildSnapshot(store, new Date('2026-09-25T09:00:00.000Z'));
+  assert.deepEqual(snap.jobs, [
+    { id: 'J-2', kind: 'cron', external_name: 'idle', status: 'unknown', checked_at: null },
+    { id: 'J-1', kind: 'cron', external_name: 'nightly', status: 'unhealthy', checked_at: '2026-09-25T09:00:00.000Z' },
+  ]);
+});

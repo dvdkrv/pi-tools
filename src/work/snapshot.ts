@@ -33,6 +33,7 @@ export type Snapshot = {
 	projects: { slug: string; title: string; status: string; items: SnapshotItem[] }[];
 	parked_items: number;
 	nudges: Nudge[];
+	jobs: { id: string; kind: string; external_name: string; status: string; checked_at: string | null }[];
 	truncated: boolean;
 };
 
@@ -109,6 +110,7 @@ export function buildSnapshot(store: WorkStore, now: Date, limit: number = SNAPS
 		projects: grouped,
 		parked_items: store.listItems({ statuses: ["parked"] }).length,
 		nudges,
+		jobs: store.listJobs({ activeOnly: true }).map((job) => ({ id: job.id, kind: job.kind, external_name: job.name, status: job.lastCheckStatus ?? "unknown", checked_at: job.lastCheckAt })),
 		truncated: items.length > kept.length,
 	};
 }

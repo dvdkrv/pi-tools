@@ -1,3 +1,5 @@
+import type { JobDeps } from "../jobs.ts";
+import { checkJobs, checkStaleJobs, isStale, jobDetails, stopJob } from "../jobs.ts";
 import type { KeyState, Move } from "../keymap.ts";
 import { decodeKey, INITIAL_KEY_STATE, keyStep, moveIndex, splitKeys } from "../keymap.ts";
 import type { PidReaders } from "../liveness.ts";
@@ -12,7 +14,7 @@ import { formatTranscript, readTranscript } from "../transcript.ts";
 import type { TriageActionUi, TriageKey } from "../triage-actions.ts";
 import { runTriageAction, TRIAGE_ACTIONS } from "../triage-actions.ts";
 import { candidateLabel, candidateSummary, openCandidates } from "../triage.ts";
-import type { Candidate, Item } from "../types.ts";
+import type { Candidate, Item, Job } from "../types.ts";
 import { OPEN_ITEM_STATUSES } from "../types.ts";
 import type { DashModel, DashRow, SessionEntry } from "./model.ts";
 import { allRows, buildDashModel, loadSessions } from "./model.ts";
@@ -36,11 +38,12 @@ export type DashDeps = {
 	fileExists?: (path: string) => boolean;
 	pi?: string;
 	kill?: (pid: number, signal: NodeJS.Signals) => void;
+	jobs?: JobDeps;
 };
 export type DashResult = { print?: string };
 type TriageState = { candidates: Candidate[]; index: number; keys: KeyState };
 
-export const MAIN_ACTIONS: readonly string[] = ["L", "x", "D", "R", "?"];
+export const MAIN_ACTIONS: readonly string[] = ["L", "c", "x", "D", "R", "?"];
 export const CONFIRM_ACTIONS: readonly string[] = ["x", "D"];
 export const HELP_TEXT = [
 	"j / k            down / up",
@@ -49,11 +52,12 @@ export const HELP_TEXT = [
 	"Tab / Shift-Tab  next / previous section (also ] and [)",
 	"/ then n / N     filter as you type, then next / previous match; Esc clears",
 	"Enter            jump to a session, reopen a closed or crashed one, open triage,",
-	"                 or show a child agent's transcript",
+	"                 show a child agent's transcript, or show job details",
 	"L                link the session to an item",
-	"x then y         stop a running child agent (SIGTERM)",
-	"D then y         delete a closed or crashed session record",
-	"R                refresh",
+	"c                check the selected job now",
+	"x then y         stop the selected job, or a running child agent (SIGTERM)",
+	"D then y         delete a stopped job, or a closed or crashed session record",
+	"R                refresh and re-run stale job checks",
 	"?                this help",
 	"q / Esc          close",
 ].join("\n");
@@ -61,11 +65,17 @@ export const HELP_TEXT = [
 const DEFAULT_REFRESH_MS = 5000;
 const TRIAGE_PAGE = 10;
 const TRIAGE_HINTS = "j/k move · a accept · m merge · d dismiss · z snooze · A all from source · p promote · enter details · esc back";
-const CONFIRM_TEXT: Record<string, string> = {
-	D: "Delete this session record? y to confirm, any other key cancels",
-	x: "Stop this child agent with SIGTERM? y to confirm, any other key cancels",
-};
 const itemLabel = (item: Item): string => `${item.id} ${item.title}  #${item.project}`;
+
+function jobOf(row: DashRow | undefined): Job | undefined {
+	return row?.kind === "job" || row?.kind === "alert" ? row.job : undefined;
+}
+
+function confirmPrompt(key: string, row: DashRow | undefined): string {
+	const job = jobOf(row);
+	if (job) return key === "x" ? `Stop ${job.id} ${job.name}? y to confirm, any other key cancels` : `Delete stopped job ${job.id}? y to confirm, any other key cancels`;
+	return key === "x" ? "Stop this child agent with SIGTERM? y to confirm, any other key cancels" : "Delete this session record? y to confirm, any other key cancels";
+}
 
 export function runDash(deps: DashDeps): Promise<DashResult> {
 	const { store } = deps.runtime;
@@ -84,6 +94,9 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 	let busy = false;
 	let closed = false;
 	let triage: TriageState | undefined;
+	let checking = false;
+	const checkAbort = new AbortController();
+	const jobDeps = (): JobDeps => ({ ...deps.jobs, signal: checkAbort.signal });
 	const modals: Modal[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let resolveRun: (result: DashResult) => void = () => {};
@@ -98,7 +111,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 	function reload(): void {
 		panes = listPanes(deps.tmux);
 		sessions = loadSessions(store, panes, deps.readers);
-		model = buildDashModel({ sessions, triageCount: openCandidates(store).length, now: store.clock() });
+		model = buildDashModel({ sessions, triageCount: openCandidates(store).length, jobs: store.listJobs(), now: store.clock() });
 		const rows = visibleRows();
 		if (!rows.some((row) => row.key === selected)) selected = rows[0]?.key ?? null;
 	}
@@ -142,6 +155,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		if (closed) return;
 		closed = true;
 		if (timer) clearInterval(timer);
+		checkAbort.abort();
 		term.stop();
 		resolveRun(result);
 	}
@@ -168,6 +182,31 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 			})
 			.finally(() => {
 				busy = false;
+				if (closed) return;
+				safeReload();
+				render();
+			});
+	}
+
+	// Checks run in the background so the dashboard stays responsive; results re-render when they land.
+	function backgroundCheck(targets?: Job[]): void {
+		if (checking) {
+			if (targets) message = "A check is already running";
+			return;
+		}
+		// With nothing stale, stay idle so an immediate `c` is not refused as "already running".
+		if (!targets && !store.listJobs({ activeOnly: true }).some((job) => isStale(job, store.clock()))) return;
+		checking = true;
+		const run = targets ? checkJobs(store, targets, jobDeps()) : checkStaleJobs(store, jobDeps());
+		run
+			.then((checked) => {
+				if (targets) message = checked.map((job) => `${job.id} ${job.lastCheckStatus}: ${job.lastCheckOutput ?? ""}`).join("; ");
+			})
+			.catch((error: unknown) => {
+				message = errorMessage(error);
+			})
+			.finally(() => {
+				checking = false;
 				if (closed) return;
 				safeReload();
 				render();
@@ -247,6 +286,11 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 			openTriage();
 			return;
 		}
+		if (row.kind === "job" || row.kind === "alert") {
+			const job = row.job;
+			await ask<void>((resolve) => messageBox(`Job ${job.id}`, jobDetails(store, job, store.clock()), resolve));
+			return;
+		}
 		const session = row.session;
 		if (session.parentSession || (session.liveness === "live" && !session.tmuxPane)) {
 			await showTranscript(session);
@@ -267,6 +311,17 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 	async function runAction(key: string): Promise<void> {
 		if (key === "R") {
 			message = "Refreshed";
+			backgroundCheck();
+			return;
+		}
+		if (key === "c") {
+			const job = jobOf(selectedRow());
+			if (!job) {
+				message = "c checks the selected job";
+				return;
+			}
+			message = `Checking ${job.id}…`;
+			backgroundCheck([job]);
 			return;
 		}
 		if (key === "?") {
@@ -287,7 +342,15 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 	}
 
 	function canConfirm(key: string): boolean {
-		const session = sessionOf(selectedRow());
+		const row = selectedRow();
+		const job = jobOf(row);
+		if (job) {
+			if (key === "x" && !job.stoppedAt) return true;
+			if (key === "D" && job.stoppedAt) return true;
+			message = key === "x" ? "This job is already stopped" : "Stop the job before deleting it";
+			return false;
+		}
+		const session = sessionOf(row);
 		if (key === "D" && session && session.liveness !== "live") return true;
 		if (key === "x" && session?.parentSession && session.alive) return true;
 		message = key === "D" ? "D deletes only closed or crashed sessions" : "x stops only running child agents";
@@ -297,6 +360,17 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 	async function runConfirmed(key: string): Promise<void> {
 		const row = allRows(model).find((candidate) => candidate.key === confirmTarget);
 		confirmTarget = null;
+		const job = jobOf(row);
+		if (job) {
+			if (key === "x") {
+				const stopped = await stopJob(store, job, "user", deps.jobs);
+				message = `Stopped ${stopped.job.id} ${stopped.job.name}${stopped.note}`;
+			} else {
+				store.deleteJob(job.id, "user");
+				message = `Deleted ${job.id}`;
+			}
+			return;
+		}
 		const session = sessionOf(row);
 		if (!session) {
 			message = "That row is gone; nothing was changed";
@@ -349,7 +423,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 			case "confirming":
 				if (canConfirm(action.key)) {
 					confirmTarget = selected;
-					message = CONFIRM_TEXT[action.key] ?? "y to confirm";
+					message = confirmPrompt(action.key, selectedRow());
 				} else {
 					keys = { ...keys, confirming: null };
 				}
@@ -426,6 +500,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		message = errorMessage(error);
 	}
 	render();
+	backgroundCheck();
 	const refreshMs = deps.refreshMs ?? DEFAULT_REFRESH_MS;
 	if (refreshMs > 0) {
 		timer = setInterval(() => {

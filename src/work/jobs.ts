@@ -181,3 +181,26 @@ export function formatJob(job: Pick<Job, "id" | "name" | "kind" | "schedule" | "
 	const when = job.lastCheckAt ? `checked ${formatAge(now.getTime() - Date.parse(job.lastCheckAt))} ago` : "never checked";
 	return `${job.id.padEnd(5)} ${health.padEnd(9)} ${job.name}  ${job.kind}${job.schedule ? ` ${job.schedule}` : ""}  ${when}${job.lastCheckOutput ? `: ${job.lastCheckOutput}` : ""}`;
 }
+
+export function jobDetails(store: WorkStore, job: Job, now: Date): string {
+	const owner = job.ownerSession ? store.getSession(job.ownerSession) : undefined;
+	const item = job.itemId ? store.getItem(job.itemId) : undefined;
+	const status = job.stoppedAt ? `stopped at ${job.stoppedAt}` : (job.lastCheckStatus ?? "unknown");
+	const checked = job.lastCheckAt ? `, checked ${formatAge(now.getTime() - Date.parse(job.lastCheckAt))} ago` : ", never checked";
+	const stop = job.stopCommand ?? (job.kind === "process" && job.pid ? `SIGTERM to pid ${job.pid}` : "-");
+	const owned = job.ownerSession ? `session ${job.ownerSession}${owner?.tmuxWindow ? ` (window ${owner.tmuxWindow})` : ""}` : "user";
+	return [
+		`${job.name} (${job.kind}${job.schedule ? `, ${job.schedule}` : ""})`,
+		`status: ${status}${checked}`,
+		`last output: ${job.lastCheckOutput ?? "-"}`,
+		`cwd: ${job.cwd}`,
+		`check: ${job.checkCommand ?? "-"}`,
+		`stop: ${stop}`,
+		`pid: ${job.pid ?? "-"}`,
+		`log: ${job.logPath ?? "-"}`,
+		`registered by: ${owned}`,
+		`item: ${item ? `${item.id} ${item.title}` : "-"}`,
+		`created: ${job.createdAt}`,
+		`updated: ${job.updatedAt}`,
+	].join("\n");
+}

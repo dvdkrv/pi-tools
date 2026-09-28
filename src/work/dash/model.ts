@@ -2,16 +2,18 @@ import type { PidReaders, ProbedSession } from "../liveness.ts";
 import { probeSessions } from "../liveness.ts";
 import type { WorkStore } from "../store.ts";
 import type { TmuxPane } from "../tmux.ts";
-import type { Session } from "../types.ts";
+import type { Job, Session } from "../types.ts";
 
 export type SectionId = "decisions" | "waiting" | "working" | "jobs" | "other";
 export type SessionEntry = ProbedSession & { itemId: string | null; itemTitle: string | null };
 export type DashRow =
 	| { kind: "session"; key: string; session: SessionEntry; depth: 0 | 1 }
-	| { kind: "triage"; key: string; count: number };
+	| { kind: "triage"; key: string; count: number }
+	| { kind: "job"; key: string; job: Job }
+	| { kind: "alert"; key: string; job: Job };
 export type DashSection = { id: SectionId; title: string; rows: DashRow[] };
 export type DashModel = { sections: DashSection[]; now: Date };
-export type DashInput = { sessions: readonly SessionEntry[]; triageCount: number; now: Date };
+export type DashInput = { sessions: readonly SessionEntry[]; triageCount: number; jobs?: readonly Job[]; now: Date };
 
 export const RECENT_MS = 7 * 86_400_000;
 
@@ -51,10 +53,15 @@ export function buildDashModel(input: DashInput): DashModel {
 
 	const top = sessions.filter((s) => !s.parentSession);
 	const live = top.filter((s) => s.liveness === "live");
+	const jobs = input.jobs ?? [];
 	const decisions = rows(live.filter((s) => s.status === "needs-me").sort(byStatusAt));
 	if (input.triageCount > 0) decisions.push({ kind: "triage", key: "triage", count: input.triageCount });
+	for (const job of jobs) {
+		if (!job.stoppedAt && job.lastCheckStatus === "unhealthy") decisions.push({ kind: "alert", key: `alert:${job.id}`, job });
+	}
 	const waiting = rows(live.filter((s) => s.status === "waiting-external").sort(byStatusAt));
 	const working = rows(live.filter((s) => s.status === "working").sort(byStatusAt));
+	const jobRows: DashRow[] = jobs.map((job) => ({ kind: "job", key: `job:${job.id}`, job }));
 	const done = live.filter((s) => s.status === "done").sort((a, b) => byStatusAt(b, a));
 	const ended = top.filter((s) => s.liveness !== "live").sort(byRecentActivity);
 	const other = rows([...done, ...ended]);
@@ -67,6 +74,7 @@ export function buildDashModel(input: DashInput): DashModel {
 			{ id: "decisions", title: "Decisions", rows: decisions },
 			{ id: "waiting", title: "Waiting", rows: waiting },
 			{ id: "working", title: "Working", rows: working },
+			{ id: "jobs", title: "Jobs", rows: jobRows },
 			{ id: "other", title: "Other sessions", rows: other },
 		],
 	};
