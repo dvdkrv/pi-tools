@@ -43,6 +43,17 @@ Not in scope:
 - Automating triage and Jira updates. That is the coordinator.
 - Discovering unregistered cron entries or processes.
 
+## Child Agents (visibility only)
+
+Project 3 will let a parent agent run headless implementation agents (`pi --mode rpc` child processes that die with their parent). This project only makes them visible:
+
+- **Registration:** a child registers like any session, with `parent_session` and `headless` set.
+- **Liveness:** a headless session is live while its PID is alive. It has no pane.
+- **Status:** a child's `needs-me` is addressed to its parent, not the user. Children therefore never appear in Decisions, Waiting, or Working on their own. They are listed indented under their parent row, wherever the parent appears, showing status, note, and time since the last turn.
+- **Keys on a child row:** `Enter` opens a read-only view of the child's last 30 transcript messages (user and assistant text only, from its session file). `x`, then `y`, stops the child with `SIGTERM` to its PID.
+- **Restore:** restore never reopens headless sessions. Their parent decides.
+- **Out of scope here:** spawning, supervision, parent-child messaging, scope and diff budgets, test-command guards, and cost caps. Those are project 3.
+
 ## Data Model
 
 A new migration adds three tables to `work.db`, plus a `session` link kind.
@@ -62,6 +73,8 @@ A new migration adds three tables to `work.db`, plus a `session` link kind.
 | `status_source` | `agent` when set through `session_status`, `auto` otherwise. |
 | `status_at` | When the status last changed. Used for "time in needs-me". |
 | `restored_from` | For a session reopened by restore: the previous PID. Informational. |
+| `parent_session` | The parent session ID for a child agent, from `PI_WORK_PARENT_SESSION` at start. Null for top-level sessions. |
+| `headless` | True when the session runs without a terminal UI (`ctx.mode` other than `tui`) or without `TMUX_PANE`. |
 
 The session-to-item link reuses `link` with kind `session` and key `session:<id>`.
 
@@ -138,7 +151,7 @@ A match links automatically, with no suggestion step. Nothing is linked when evi
 After a reboot, tmux-resurrect restores windows (names and working directories) with shells, but not Pi processes. Restore finishes the job.
 
 - **Trigger:** the dotfiles set `@resurrect-hook-post-restore-all` to `work restore --auto`. The dashboard also runs the same logic when it opens and finds crashed sessions that no restore attempt has handled since the last boot.
-- **Selection:** sessions that are crashed, whose status is not `done`, and whose `last_turn_at` (or `started_at`) is within the last 7 days.
+- **Selection:** top-level (non-headless) sessions that are crashed, whose status is not `done`, and whose `last_turn_at` (or `started_at`) is within the last 7 days.
 - **Placement:** for each selected session:
   1. If a pane exists whose window name and current path match the session's `tmux_window` and `cwd`, and it is running only a shell, send `pi --session <file>` to that pane.
   2. Otherwise, if a window with that name exists, split it and run the command there.
