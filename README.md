@@ -55,13 +55,17 @@ A local work tracker for one person: one list of projects and items, a triage in
 - `/triage` reviews candidates from Jira (tickets assigned to you), GitHub (direct review requests and your own PRs; team review requests are excluded), and agents: accept, merge, dismiss, snooze, bulk accept, or accept and promote to Jira.
 - `/today` syncs, triages, and opens a `today` tmux window running a fresh `plan-YYYY-MM-DD` Pi session with read-only snapshot tools and local-only update tools.
 
-The same features are available from the shell through `bin/work.ts` (`add`, `list`, `show`, `set`, `project`, `sync`, `triage`, `today`, `promote`, `undismiss`, `recap`, `restore`, `dash`, `export`, `import`). For example, use `alias work='node <package>/bin/work.ts'` and `alias todo='work add'`. Aliases do not reach tmux popups or hooks, so bindings should call a small `work` wrapper script on `PATH` instead.
+The same features are available from the shell through `bin/work.ts` (`add`, `list`, `show`, `set`, `project`, `sync`, `triage`, `today`, `promote`, `undismiss`, `recap`, `restore`, `dash`, `job`, `usage`, `export`, `import`). For example, use `alias work='node <package>/bin/work.ts'` and `alias todo='work add'`. Aliases do not reach tmux popups or hooks, so bindings should call a small `work` wrapper script on `PATH` instead.
 
 **Sessions.** Pi sessions register themselves in the work database automatically: their pane, window, file, and status. A run marks it `working`. When the run ends, it becomes `needs-me` with the last line of the reply as its note, unless the agent called the static `session_status` tool to declare `needs-me`, `waiting-external`, or `done` with a note. Sessions link to items automatically from `PI_WORK_ITEM` (set by `/task` when the request names an item), from PR head branches and Jira keys in the branch name, or from another session in the same worktree. Terminal sessions always register as top-level sessions, with no pane when they run outside tmux. `rpc` sessions register as headless. `print` and `json` runs register only as child agents, when `PI_WORK_PARENT_SESSION` names their parent. Children appear only under their parent.
 
 **Dashboard.** `/dash` (or `work dash` in a terminal) opens a full-screen dashboard that leads with Decisions: sessions waiting on you, oldest first, plus pending triage. Waiting, Working, and Other sessions follow. Keys are vim-style (`j`/`k`, `gg`/`G`, `Ctrl-d`/`Ctrl-u`, `Tab`, `/` to filter, `?` for help). `Enter` jumps to a session's pane and closes the popup, reopens a crashed or closed session, opens triage, or shows a child's read-only transcript. `L` links a session to an item, `x` then `y` stops a child agent, and `D` then `y` deletes a closed record. A tmux binding such as `bind D display-popup -E -w 90% -h 90% 'work dash'` needs the wrapper script mentioned above.
 
 **Restore.** After a reboot, `work restore --auto` (for example from `@resurrect-hook-post-restore-all`) reopens crashed terminal sessions that ran in tmux, from the last 7 days, and are not `done`. It types `pi --session <file>` into a matching restored shell pane, splits the window, or opens a new window. It runs at most once per boot, and the dashboard runs the same logic when it opens. `work restore --dry-run` prints the plan.
+
+**Jobs.** Agents register background jobs they start with the static `job_register` tool (a cron entry or a process, with an optional `check_command`, `stop_command`, and log path). Users register them with `work job add --name <n> --kind cron|process [--check <cmd>] [--stop <cmd>] …`. There is no approval step. Instead, every job records the session that registered it, and the dashboard's details view shows the exact commands. Checks run only when you look: when the dashboard opens (for checks older than 60 seconds), on `c`, or with `work job check [J-n]`. Each check runs `/bin/sh -c` in the job's directory with a 15-second timeout, at most 4 at a time. Exit 0 is healthy. Unhealthy jobs appear in Decisions. `x` then `y` stops a job, and `D` then `y` deletes a stopped one.
+
+**Usage.** The tracker records local, content-free usage rows (actions, counts, and durations, never titles, notes, or commands), and keeps them for 180 days. `work usage [--days 30]` prints a Markdown summary: time in `needs-me`, triage outcomes, planner follow-through, and dashboard use. Set `"usage": false` in the config to turn recording off.
 
 Data lives in `${XDG_DATA_HOME:-~/.local/share}/work/work.db` (SQLite, mode 0600) with rotating JSON Lines backups. Configuration lives in `${XDG_CONFIG_HOME:-~/.config}/work/config.json`:
 
@@ -71,7 +75,8 @@ Data lives in `${XDG_DATA_HOME:-~/.local/share}/work/work.db` (SQLite, mode 0600
   "github": { "accounts": [{ "user": "work-account", "orgs": ["example-org"] }] },
   "projects": [{ "slug": "payments", "title": "Payments", "jiraEpic": "ABC-100" }],
   "rules": [{ "repo": "payments-api", "project": "payments" }],
-  "planner": { "cwd": "~" }
+  "planner": { "cwd": "~" },
+  "usage": true
 }
 ```
 
