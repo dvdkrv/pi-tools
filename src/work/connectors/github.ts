@@ -115,6 +115,7 @@ function detailedObservation(repo: string, view: PrView, reason: string, observe
 			reviews: view.reviews?.length ?? 0,
 			comments: view.comments?.length ?? 0,
 			reviewDecision: view.reviewDecision || null,
+			head: view.headRefName ?? null,
 		},
 		meta: { repo, org: repo.split("/")[0], jiraKeys: jiraKeysIn(`${view.title} ${view.headRefName ?? ""}`) },
 	};

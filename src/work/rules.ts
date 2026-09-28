@@ -7,7 +7,7 @@ import { OPEN_ITEM_STATUSES } from "./types.ts";
 export type ProjectHints = { repo?: string; jiraEpic?: string; jiraProject?: string };
 export type GitRunner = (cwd: string, args: string[]) => string;
 
-const defaultGit: GitRunner = (cwd, args) =>
+export const defaultGit: GitRunner = (cwd, args) =>
 	execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
 
 export function repoMatches(ruleRepo: string, repo: string): boolean {

@@ -44,7 +44,7 @@ test('review requests are shallow, and authored and linked PRs are detailed', as
   assert.equal(review.observations[0].key, 'github:pr:example-org/api#1');
   assert.equal(review.observations[0].title, 'Review example-org/api#1: Add thing');
   assert.deepEqual(review.observations[0].state, { detailed: false, state: 'OPEN' });
-  assert.deepEqual(authored.observations[0].state, { detailed: true, state: 'OPEN', checks: 'passing', reviews: 1, comments: 0, reviewDecision: null });
+  assert.deepEqual(authored.observations[0].state, { detailed: true, state: 'OPEN', checks: 'passing', reviews: 1, comments: 0, reviewDecision: null, head: 'feature' });
   assert.deepEqual(authored.observations[0].meta.jiraKeys, ['ABC-7']);
   assert.deepEqual(linked.observations.map((o) => o.key), ['github:pr:example-org/api#3']);
   assert.ok(calls.slice(1).every((c) => c.env.GH_TOKEN === 'gho_TOKEN'));
