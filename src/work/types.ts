@@ -180,3 +180,40 @@ export type SessionStart = {
 	parentSession: string | null;
 	headless: boolean;
 };
+
+export type JobKind = "cron" | "process";
+export type JobHealth = "healthy" | "unhealthy" | "unknown";
+export const JOB_KINDS: readonly JobKind[] = ["cron", "process"];
+
+export type Job = {
+	id: string;
+	name: string;
+	kind: JobKind;
+	ownerSession: string | null;
+	itemId: string | null;
+	schedule: string | null;
+	pid: number | null;
+	cwd: string;
+	checkCommand: string | null;
+	stopCommand: string | null;
+	logPath: string | null;
+	lastCheckAt: string | null;
+	lastCheckStatus: JobHealth | null;
+	lastCheckOutput: string | null;
+	createdAt: string;
+	updatedAt: string;
+	stoppedAt: string | null;
+};
+
+export type JobInput = {
+	name: string;
+	kind: JobKind;
+	cwd: string;
+	schedule?: string | null;
+	pid?: number | null;
+	checkCommand?: string | null;
+	stopCommand?: string | null;
+	logPath?: string | null;
+	ownerSession?: string | null;
+	itemId?: string | null;
+};

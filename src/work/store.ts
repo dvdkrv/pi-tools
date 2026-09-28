@@ -12,6 +12,10 @@ import type {
 	ConnectorStatus,
 	Item,
 	ItemStatus,
+	Job,
+	JobHealth,
+	JobInput,
+	JobKind,
 	JsonObject,
 	Link,
 	LinkKind,
@@ -31,7 +35,7 @@ import type {
 	WaitingOn,
 	WorkEvent,
 } from "./types.ts";
-import { NOTE_MAX } from "./types.ts";
+import { JOB_KINDS, NOTE_MAX } from "./types.ts";
 
 export class WorkStoreError extends Error {}
 
@@ -70,7 +74,7 @@ const SESSION_COLUMNS: Record<keyof SessionPatch, string> = {
 export const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const RESOLVED_STATES: readonly CandidateState[] = ["accepted", "merged", "dismissed", "withdrawn"];
-const TABLES = ["project", "item", "link", "signal", "candidate", "dismissal", "plan", "event", "connector_run", "meta"] as const;
+const TABLES = ["project", "item", "link", "signal", "candidate", "dismissal", "plan", "event", "connector_run", "meta", "job"] as const;
 const REPLACE_TABLES: readonly string[] = ["project", "connector_run", "meta"];
 
 export function itemId(num: number): string {
@@ -85,6 +89,16 @@ export function itemNum(id: string): number {
 
 export function sessionLinkKey(sessionId: string): string {
 	return `session:${sessionId}`;
+}
+
+export function jobId(num: number): string {
+	return `J-${num}`;
+}
+
+export function jobNum(id: string): number {
+	const match = /^J-(\d+)$/.exec(id.trim());
+	if (!match) throw new WorkStoreError(`Invalid job ID: ${id}`);
+	return Number(match[1]);
 }
 
 function text(value: unknown): string | null {
@@ -228,6 +242,28 @@ function toSession(r: Row): Session {
 		restoredFrom: int(r.restored_from),
 		parentSession: text(r.parent_session),
 		headless: Number(r.headless) === 1,
+	};
+}
+
+function toJob(r: Row): Job {
+	return {
+		id: jobId(Number(r.num)),
+		name: String(r.name),
+		kind: r.kind as JobKind,
+		ownerSession: text(r.owner_session),
+		itemId: r.item_num === null || r.item_num === undefined ? null : itemId(Number(r.item_num)),
+		schedule: text(r.schedule),
+		pid: int(r.pid),
+		cwd: String(r.cwd),
+		checkCommand: text(r.check_command),
+		stopCommand: text(r.stop_command),
+		logPath: text(r.log_path),
+		lastCheckAt: text(r.last_check_at),
+		lastCheckStatus: text(r.last_check_status) as JobHealth | null,
+		lastCheckOutput: text(r.last_check_output),
+		createdAt: String(r.created_at),
+		updatedAt: String(r.updated_at),
+		stoppedAt: text(r.stopped_at),
 	};
 }
 
@@ -737,6 +773,91 @@ export class WorkStore {
 		});
 	}
 
+	// Jobs. Registering, stopping, and deleting are domain mutations; check results are operational.
+
+	registerJob(input: JobInput, actor: Actor): { job: Job; created: boolean } {
+		const name = requireText(input.name, "name");
+		if (name.length > 80) throw new WorkStoreError("name must be at most 80 characters");
+		if (!JOB_KINDS.includes(input.kind)) throw new WorkStoreError(`kind must be one of ${JOB_KINDS.join(", ")}`);
+		const cwd = requireText(input.cwd, "cwd");
+		if (input.pid !== undefined && input.pid !== null && (!Number.isInteger(input.pid) || input.pid < 1)) throw new WorkStoreError("pid must be a positive integer");
+		return this.transaction(() => {
+			if (input.itemId && !this.getItem(input.itemId)) throw new WorkStoreError(`Unknown item: ${input.itemId}`);
+			const row = this.one("SELECT * FROM job WHERE name = ? AND stopped_at IS NULL", name);
+			const before = row ? toJob(row) : undefined;
+			const keep = <T>(value: T | null | undefined, previous: T | null | undefined): T | null => (value !== undefined ? value : (previous ?? null));
+			const next = {
+				kind: input.kind,
+				ownerSession: keep(input.ownerSession, before?.ownerSession),
+				itemId: keep(input.itemId, before?.itemId),
+				schedule: keep(input.schedule, before?.schedule),
+				pid: keep(input.pid, before?.pid),
+				cwd,
+				checkCommand: keep(input.checkCommand, before?.checkCommand),
+				stopCommand: keep(input.stopCommand, before?.stopCommand),
+				logPath: keep(input.logPath, before?.logPath),
+			};
+			const values: Param[] = [next.kind, next.ownerSession, next.itemId ? itemNum(next.itemId) : null, next.schedule, next.pid, next.cwd, next.checkCommand, next.stopCommand, next.logPath];
+			const now = this.now();
+			if (!before) {
+				const result = this.run(
+					"INSERT INTO job (name, kind, owner_session, item_num, schedule, pid, cwd, check_command, stop_command, log_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					name, ...values, now, now,
+				);
+				const job = this.getJob(jobId(result.lastInsertRowid)) as Job;
+				this.event(actor, `job:${job.id}`, "create", { after: job });
+				return { job, created: true };
+			}
+			if (JSON.stringify({ ...before, ...next }) === JSON.stringify(before)) return { job: before, created: false };
+			this.run(
+				"UPDATE job SET kind = ?, owner_session = ?, item_num = ?, schedule = ?, pid = ?, cwd = ?, check_command = ?, stop_command = ?, log_path = ?, updated_at = ? WHERE num = ?",
+				...values, now, jobNum(before.id),
+			);
+			const job = this.getJob(before.id) as Job;
+			this.event(actor, `job:${job.id}`, "update", { before, after: job });
+			return { job, created: false };
+		});
+	}
+
+	getJob(id: string): Job | undefined {
+		const row = this.one("SELECT * FROM job WHERE num = ?", jobNum(id));
+		return row ? toJob(row) : undefined;
+	}
+
+	listJobs(filter: { activeOnly?: boolean } = {}): Job[] {
+		const where = filter.activeOnly ? " WHERE stopped_at IS NULL" : "";
+		return this.all(`SELECT * FROM job${where} ORDER BY stopped_at IS NOT NULL, stopped_at DESC, name, num`).map(toJob);
+	}
+
+	recordJobCheck(id: string, status: JobHealth, output: string): Job {
+		const changed = this.run("UPDATE job SET last_check_at = ?, last_check_status = ?, last_check_output = ? WHERE num = ?", this.now(), status, output.slice(0, NOTE_MAX), jobNum(id)).changes;
+		if (changed === 0) throw new WorkStoreError(`Unknown job: ${id}`);
+		return this.getJob(id) as Job;
+	}
+
+	markJobStopped(id: string, actor: Actor): Job {
+		return this.transaction(() => {
+			const before = this.getJob(id);
+			if (!before) throw new WorkStoreError(`Unknown job: ${id}`);
+			if (before.stoppedAt) throw new WorkStoreError(`${id} is already stopped`);
+			const now = this.now();
+			this.run("UPDATE job SET stopped_at = ?, updated_at = ? WHERE num = ?", now, now, jobNum(id));
+			const after = this.getJob(id) as Job;
+			this.event(actor, `job:${id}`, "stop", { before, after });
+			return after;
+		});
+	}
+
+	deleteJob(id: string, actor: Actor): void {
+		this.transaction(() => {
+			const before = this.getJob(id);
+			if (!before) throw new WorkStoreError(`Unknown job: ${id}`);
+			if (!before.stoppedAt) throw new WorkStoreError("Only stopped jobs can be deleted");
+			this.run("DELETE FROM job WHERE num = ?", jobNum(id));
+			this.event(actor, `job:${id}`, "delete", { before });
+		});
+	}
+
 	// Connector runs and meta (operational: no events)
 
 	recordConnectorRun(input: { connector: string; query: string; status: ConnectorStatus; error: string | null }): void {
@@ -771,7 +892,7 @@ export class WorkStore {
 	}
 
 	isEmpty(): boolean {
-		for (const table of ["item", "link", "candidate", "plan", "dismissal"]) {
+		for (const table of ["item", "link", "candidate", "plan", "dismissal", "job"]) {
 			if (Number((this.one(`SELECT COUNT(*) AS n FROM ${table}`) as Row).n) > 0) return false;
 		}
 		return true;
