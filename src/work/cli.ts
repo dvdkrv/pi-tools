@@ -20,7 +20,7 @@ import { tmuxRunner } from "./tmux.ts";
 import { openCandidates } from "./triage.ts";
 import type { Item, ItemStatus, Job, JobKind, WaitingOn } from "./types.ts";
 import { ITEM_STATUSES, WAITING_ON } from "./types.ts";
-import { recordUsage } from "./usage.ts";
+import { recordUsage, usageReport } from "./usage.ts";
 
 export type CliIo = { out(text: string): void; err(text: string): void; ask(question: string): Promise<string> };
 export type CliDeps = {
@@ -384,6 +384,18 @@ const job: CliCommand = {
 	},
 };
 
+const usageCommand: CliCommand = {
+	usage: "usage [--days <n>]                   Markdown summary of how the tracker is used (default 30 days)",
+	async run(args, deps) {
+		const index = args.indexOf("--days");
+		const days = index >= 0 ? Number(args[index + 1]) : 30;
+		if (!Number.isInteger(days) || days < 1 || days > 180) throw new UsageError("--days must be a whole number from 1 to 180");
+		const rt = deps.runtime();
+		deps.io.out(usageReport(rt.store, days, rt.store.clock()));
+		return 0;
+	},
+};
+
 const today: CliCommand = {
 	usage: "today                                Sync, triage, and open today's planner",
 	async run(_args, deps) {
@@ -399,7 +411,7 @@ const today: CliCommand = {
 };
 
 export const COMMANDS: Record<string, CliCommand> = {
-	add, list, show, set, project, sync, triage: triageCommand, today, promote, undismiss, recap, restore: restoreCommand, dash, job, export: exportCommand, import: importCommand,
+	add, list, show, set, project, sync, triage: triageCommand, today, promote, undismiss, recap, restore: restoreCommand, dash, job, usage: usageCommand, export: exportCommand, import: importCommand,
 };
 
 export function usage(): string {
