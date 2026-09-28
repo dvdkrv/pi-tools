@@ -6,6 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { captureItem } from "../src/work/capture.ts";
 import { expandHome } from "../src/work/config.ts";
+import { registerAgentJob } from "../src/work/jobs.ts";
 import type { TmuxRunner } from "../src/work/planner.ts";
 import { defaultTmux, launchPlanner, PLANNER_ENV, shellQuote } from "../src/work/planner.ts";
 import { registerPlannerTools } from "../src/work/planner-tools.ts";
@@ -22,7 +23,7 @@ import { popupArgs, tmuxRunner } from "../src/work/tmux.ts";
 import { openCandidates } from "../src/work/triage.ts";
 import type { TriageUiContext } from "../src/work/triage-ui.ts";
 import { runTriageUi } from "../src/work/triage-ui.ts";
-import { DECLARED_STATUSES } from "../src/work/types.ts";
+import { DECLARED_STATUSES, JOB_KINDS } from "../src/work/types.ts";
 
 export type WorkExtensionOptions = {
 	runtime?: () => Runtime;
@@ -38,6 +39,8 @@ export type WorkExtensionOptions = {
 export const PROPOSE_DESCRIPTION = "Propose a follow-up for the user's work triage inbox. Use only for work outside your current task's scope, or for work you would otherwise leave as \"not done yet\" at the end of the session. Do not propose normal progress on your own task. The user reviews every proposal; this tool cannot create items, change status, or contact Jira.";
 
 export const SESSION_STATUS_DESCRIPTION = "Declare this session's state as your final action in a turn: `needs-me` when you are asking the user a question or need a decision (note: the question), `waiting-external` when blocked on CI, review, a deploy, or another person (note: what and why), `done` when the task is complete (note: one-line outcome). Call at most once per turn.";
+
+export const JOB_REGISTER_DESCRIPTION = "Register a background job you started, such as a cron entry or a long-running process, so the user can see its health on the work dashboard. Give a check_command that exits 0 when the job is healthy, and a stop_command when stopping needs more than SIGTERM to pid. Registering the same name again updates the job.";
 
 const WORK_BIN = fileURLToPath(new URL("../bin/work.ts", import.meta.url));
 
@@ -135,6 +138,27 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 				const recorded = tracker.declare(params.status, params.note);
 				const text = recorded ? `Recorded ${params.status}.` : "Session status is not being recorded for this session.";
 				return { content: [{ type: "text", text }], details: { recorded } };
+			},
+		});
+
+		pi.registerTool({
+			name: "job_register",
+			label: "Job Register",
+			description: JOB_REGISTER_DESCRIPTION,
+			parameters: Type.Object({
+				name: Type.String({ minLength: 1, maxLength: 80 }),
+				kind: StringEnum([...JOB_KINDS] as const),
+				cwd: Type.String({ minLength: 1 }),
+				schedule: Type.Optional(Type.String({ maxLength: 100 })),
+				pid: Type.Optional(Type.Integer({ minimum: 1 })),
+				check_command: Type.Optional(Type.String({ maxLength: 1000 })),
+				stop_command: Type.Optional(Type.String({ maxLength: 1000 })),
+				log_path: Type.Optional(Type.String({ maxLength: 500 })),
+				relates_to: Type.Optional(Type.String()),
+			}),
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				const result = registerAgentJob(rt().store, params, ctx.sessionManager.getSessionId());
+				return { content: [{ type: "text", text: result.message }], details: { jobId: result.job.id, created: result.created } };
 			},
 		});
 

@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
+import { formatAge } from "./dash/text.ts";
 import { pidAlive } from "./liveness.ts";
 import { errorMessage } from "./secrets.ts";
 import type { WorkStore } from "./store.ts";
-import type { Actor, Job, JobHealth } from "./types.ts";
+import type { Actor, Job, JobHealth, JobKind } from "./types.ts";
 import { NOTE_MAX } from "./types.ts";
 
 export const CHECK_TIMEOUT_MS = 15_000;
@@ -133,4 +134,50 @@ export async function stopJob(store: WorkStore, job: Job, actor: Actor, deps: Jo
 		note = "; no stop command, so only the record changed";
 	}
 	return { job: store.markJobStopped(job.id, actor), note };
+}
+
+export type JobRegisterParams = {
+	name: string;
+	kind: JobKind;
+	cwd: string;
+	schedule?: string;
+	pid?: number;
+	check_command?: string;
+	stop_command?: string;
+	log_path?: string;
+	relates_to?: string;
+};
+
+export function registerAgentJob(store: WorkStore, params: JobRegisterParams, sessionId: string): { job: Job; created: boolean; message: string } {
+	let itemId = store.sessionLink(sessionId)?.itemId ?? null;
+	let note = "";
+	if (params.relates_to) {
+		let found: string | undefined;
+		try {
+			found = store.getItem(params.relates_to)?.id;
+		} catch {
+			found = undefined;
+		}
+		if (found) itemId = found;
+		else note = ` (ignored unknown item ${params.relates_to})`;
+	}
+	const { job, created } = store.registerJob({
+		name: params.name,
+		kind: params.kind,
+		cwd: params.cwd,
+		schedule: params.schedule,
+		pid: params.pid,
+		checkCommand: params.check_command,
+		stopCommand: params.stop_command,
+		logPath: params.log_path,
+		ownerSession: sessionId,
+		itemId,
+	}, `agent:${sessionId}`);
+	return { job, created, message: `${created ? "Registered" : "Updated"} ${job.id} ${job.name}.${note} The user sees its health on the work dashboard.` };
+}
+
+export function formatJob(job: Pick<Job, "id" | "name" | "kind" | "schedule" | "stoppedAt" | "lastCheckAt" | "lastCheckStatus" | "lastCheckOutput">, now: Date): string {
+	const health = job.stoppedAt ? "stopped" : (job.lastCheckStatus ?? "unchecked");
+	const when = job.lastCheckAt ? `checked ${formatAge(now.getTime() - Date.parse(job.lastCheckAt))} ago` : "never checked";
+	return `${job.id.padEnd(5)} ${health.padEnd(9)} ${job.name}  ${job.kind}${job.schedule ? ` ${job.schedule}` : ""}  ${when}${job.lastCheckOutput ? `: ${job.lastCheckOutput}` : ""}`;
 }

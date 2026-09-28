@@ -5,6 +5,7 @@ import { expandHome } from "./config.ts";
 import { runDash } from "./dash/app.ts";
 import type { Terminal } from "./dash/terminal.ts";
 import { processTerminal } from "./dash/terminal.ts";
+import { checkJobs, formatJob } from "./jobs.ts";
 import type { PidReaders } from "./liveness.ts";
 import type { TmuxRunner } from "./planner.ts";
 import { defaultTmux, launchPlanner } from "./planner.ts";
@@ -17,7 +18,7 @@ import type { ItemPatch } from "./store.ts";
 import { formatSyncReport, syncAll } from "./sync.ts";
 import { tmuxRunner } from "./tmux.ts";
 import { openCandidates } from "./triage.ts";
-import type { Item, ItemStatus, WaitingOn } from "./types.ts";
+import type { Item, ItemStatus, Job, JobKind, WaitingOn } from "./types.ts";
 import { ITEM_STATUSES, WAITING_ON } from "./types.ts";
 
 export type CliIo = { out(text: string): void; err(text: string): void; ask(question: string): Promise<string> };
@@ -70,6 +71,18 @@ function parseBoolean(value: string): boolean {
 	if (["true", "yes", "y", "1", "on"].includes(value.toLowerCase())) return true;
 	if (["false", "no", "n", "0", "off"].includes(value.toLowerCase())) return false;
 	throw new UsageError(`Expected true or false, got: ${value}`);
+}
+
+export function parseFlags(args: string[], allowed: readonly string[]): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (let i = 0; i < args.length; i += 2) {
+		const match = /^--([a-z]+)$/.exec(args[i]);
+		if (!match || !allowed.includes(match[1])) throw new UsageError(`Unknown option: ${args[i]}`);
+		const value = args[i + 1];
+		if (value === undefined) throw new UsageError(`--${match[1]} needs a value`);
+		out[match[1]] = value;
+	}
+	return out;
 }
 
 export function patchFrom(assignments: Record<string, string>, now: Date): ItemPatch {
@@ -323,6 +336,52 @@ const dash: CliCommand = {
 	},
 };
 
+const JOB_USAGE = "Usage: work job add --name <name> --kind cron|process [--cwd <dir>] [--schedule <cron>] [--pid <n>] [--check <cmd>] [--stop <cmd>] [--log <path>] [--item W-n]";
+
+const job: CliCommand = {
+	usage: "job [add --name <n> --kind <k> ... | check [J-n]]   List, register, or check background jobs",
+	async run(args, deps) {
+		const rt = deps.runtime();
+		const [action, ...rest] = args;
+		if (!action) {
+			const jobs = rt.store.listJobs();
+			deps.io.out(jobs.length ? jobs.map((j) => formatJob(j, rt.store.clock())).join("\n") : "No jobs");
+			return 0;
+		}
+		if (action === "add") {
+			const flags = parseFlags(rest, ["name", "kind", "cwd", "schedule", "pid", "check", "stop", "log", "item"]);
+			if (!flags.name || !flags.kind) throw new UsageError(JOB_USAGE);
+			const { job: registered, created } = rt.store.registerJob({
+				name: flags.name,
+				kind: flags.kind as JobKind,
+				cwd: flags.cwd ?? deps.cwd,
+				schedule: flags.schedule,
+				pid: flags.pid === undefined ? undefined : Number(flags.pid),
+				checkCommand: flags.check,
+				stopCommand: flags.stop,
+				logPath: flags.log,
+				itemId: flags.item,
+			}, "user");
+			deps.io.out(`${created ? "Added" : "Updated"} ${registered.id} ${registered.name}`);
+			return 0;
+		}
+		if (action === "check") {
+			const targets: Job[] = [];
+			if (rest[0]) {
+				const one = rt.store.getJob(rest[0]);
+				if (!one) throw new UsageError(`Unknown job: ${rest[0]}`);
+				targets.push(one);
+			} else {
+				targets.push(...rt.store.listJobs({ activeOnly: true }));
+			}
+			const checked = await checkJobs(rt.store, targets);
+			deps.io.out(checked.length ? checked.map((j) => formatJob(j, rt.store.clock())).join("\n") : "No jobs to check");
+			return 0;
+		}
+		throw new UsageError(JOB_USAGE);
+	},
+};
+
 const today: CliCommand = {
 	usage: "today                                Sync, triage, and open today's planner",
 	async run(_args, deps) {
@@ -338,7 +397,7 @@ const today: CliCommand = {
 };
 
 export const COMMANDS: Record<string, CliCommand> = {
-	add, list, show, set, project, sync, triage: triageCommand, today, promote, undismiss, recap, restore: restoreCommand, dash, export: exportCommand, import: importCommand,
+	add, list, show, set, project, sync, triage: triageCommand, today, promote, undismiss, recap, restore: restoreCommand, dash, job, export: exportCommand, import: importCommand,
 };
 
 export function usage(): string {
