@@ -135,6 +135,35 @@ CREATE TABLE usage (
 );
 CREATE INDEX usage_at ON usage(at);
 `,
+	`
+CREATE TABLE child_run (
+	num INTEGER PRIMARY KEY AUTOINCREMENT,
+	lead_session TEXT NOT NULL,
+	child_session TEXT,
+	kind TEXT NOT NULL CHECK (kind IN ('implement', 'read-only')),
+	brief TEXT NOT NULL,
+	model TEXT NOT NULL,
+	repo TEXT,
+	worktree TEXT,
+	branch TEXT,
+	base_commit TEXT,
+	pid INTEGER,
+	outcome TEXT NOT NULL CHECK (outcome IN ('running', 'done', 'failed', 'over-budget', 'over-spend', 'incomplete', 'stopped', 'merged', 'discarded', 'interrupted')),
+	flags TEXT NOT NULL DEFAULT '[]',
+	spend_usd REAL NOT NULL DEFAULT 0,
+	diff_lines INTEGER NOT NULL DEFAULT 0,
+	diff_files INTEGER NOT NULL DEFAULT 0,
+	budget_lines INTEGER,
+	budget_files INTEGER,
+	acceptance TEXT NOT NULL DEFAULT '[]',
+	summary TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	ended_at TEXT,
+	merged_at TEXT
+);
+CREATE INDEX child_run_lead ON child_run(lead_session);
+CREATE INDEX child_run_child ON child_run(child_session);
+`,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

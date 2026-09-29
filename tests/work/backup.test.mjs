@@ -23,7 +23,7 @@ test('export and import round-trip every table', async () => {
   const rows = exportJsonl(source, path);
   assert.ok(rows > 5);
   assert.equal(statSync(path).mode & 0o777, 0o600);
-  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8').split('\n')[0]), { format: 'work-backup', schema: 2 });
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8').split('\n')[0]), { format: 'work-backup', schema: 3 });
   const target = await memoryStore();
   importJsonl(target, path);
   assert.deepEqual(target.listItems(), source.listItems());

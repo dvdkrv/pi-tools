@@ -104,7 +104,7 @@ test('a version 1 database migrates to version 2 with the new tables', () => {
   raw.exec('PRAGMA user_version = 1');
   raw.close();
   const store = WorkStore.open(path);
-  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 3);
   assert.deepEqual(store.listSessions(), []);
   const tables = store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('session', 'job', 'usage') ORDER BY name").all().map((row) => row.name);
   assert.deepEqual(tables, ['job', 'session', 'usage']);

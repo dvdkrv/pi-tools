@@ -3,11 +3,20 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { MIGRATIONS, SCHEMA_VERSION } from "./migrations.ts";
 import type {
+	AcceptanceResult,
 	Actor,
+	Brief,
 	Candidate,
 	CandidateKind,
 	CandidateSource,
 	CandidateState,
+	ChildEndOutcome,
+	ChildFlag,
+	ChildKind,
+	ChildOutcome,
+	ChildRun,
+	ChildRunInput,
+	ChildWorktree,
 	ConnectorRun,
 	ConnectorStatus,
 	Item,
@@ -74,10 +83,23 @@ const SESSION_COLUMNS: Record<keyof SessionPatch, string> = {
 	restoredFrom: "restored_from",
 };
 
+export type ChildRunPatch = { childSession?: string; pid?: number | null; flags?: ChildFlag[]; spendUsd?: number; diffLines?: number; diffFiles?: number };
+export type ChildRunEnd = { outcome: ChildEndOutcome; summary?: string; acceptance?: AcceptanceResult[]; diffLines?: number; diffFiles?: number };
+
+const CHILD_RUN_COLUMNS: Record<keyof ChildRunPatch, string> = {
+	childSession: "child_session",
+	pid: "pid",
+	flags: "flags",
+	spendUsd: "spend_usd",
+	diffLines: "diff_lines",
+	diffFiles: "diff_files",
+};
+const UNDISCARDABLE: readonly ChildOutcome[] = ["running", "merged", "discarded"];
+
 export const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const RESOLVED_STATES: readonly CandidateState[] = ["accepted", "merged", "dismissed", "withdrawn"];
-const TABLES = ["project", "item", "link", "signal", "candidate", "dismissal", "plan", "event", "connector_run", "meta", "job"] as const;
+const TABLES = ["project", "item", "link", "signal", "candidate", "dismissal", "plan", "event", "connector_run", "meta", "job", "child_run"] as const;
 const REPLACE_TABLES: readonly string[] = ["project", "connector_run", "meta"];
 
 export function itemId(num: number): string {
@@ -101,6 +123,16 @@ export function jobId(num: number): string {
 export function jobNum(id: string): number {
 	const match = /^J-(\d+)$/.exec(id.trim());
 	if (!match) throw new WorkStoreError(`Invalid job ID: ${id}`);
+	return Number(match[1]);
+}
+
+export function childRunId(num: number): string {
+	return `C-${num}`;
+}
+
+export function childRunNum(id: string): number {
+	const match = /^C-(\d+)$/.exec(id.trim());
+	if (!match) throw new WorkStoreError(`Invalid child run ID: ${id}`);
 	return Number(match[1]);
 }
 
@@ -267,6 +299,34 @@ function toJob(r: Row): Job {
 		createdAt: String(r.created_at),
 		updatedAt: String(r.updated_at),
 		stoppedAt: text(r.stopped_at),
+	};
+}
+
+function toChildRun(r: Row): ChildRun {
+	return {
+		id: childRunId(Number(r.num)),
+		leadSession: String(r.lead_session),
+		childSession: text(r.child_session),
+		kind: r.kind as ChildKind,
+		brief: json<Brief>(r.brief, {} as Brief),
+		model: String(r.model),
+		repo: text(r.repo),
+		worktree: text(r.worktree),
+		branch: text(r.branch),
+		baseCommit: text(r.base_commit),
+		pid: int(r.pid),
+		outcome: r.outcome as ChildOutcome,
+		flags: json<ChildFlag[]>(r.flags, []),
+		spendUsd: Number(r.spend_usd),
+		diffLines: Number(r.diff_lines),
+		diffFiles: Number(r.diff_files),
+		budgetLines: int(r.budget_lines),
+		budgetFiles: int(r.budget_files),
+		acceptance: json<AcceptanceResult[]>(r.acceptance, []),
+		summary: String(r.summary),
+		createdAt: String(r.created_at),
+		endedAt: text(r.ended_at),
+		mergedAt: text(r.merged_at),
 	};
 }
 
@@ -861,6 +921,111 @@ export class WorkStore {
 		});
 	}
 
+	// Child runs. Creating, ending, merging, and discarding are domain mutations; progress updates are operational.
+
+	// The row is inserted first so prepare can name the worktree after the run ID, but the create event is
+	// written only once prepare succeeds. A failed prepare removes the row, so no run is recorded.
+	createChildRun(input: ChildRunInput, actor: Actor, prepare?: (id: string) => ChildWorktree): ChildRun {
+		const num = this.run(
+			"INSERT INTO child_run (lead_session, kind, brief, model, repo, outcome, budget_lines, budget_files, created_at) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)",
+			input.leadSession, input.brief.kind, JSON.stringify(input.brief), input.model, input.repo, input.budgetLines, input.budgetFiles, this.now(),
+		).lastInsertRowid;
+		const id = childRunId(num);
+		let tree: ChildWorktree | undefined;
+		try {
+			tree = prepare?.(id);
+		} catch (error) {
+			this.run("DELETE FROM child_run WHERE num = ?", num);
+			throw error;
+		}
+		return this.transaction(() => {
+			if (tree) this.run("UPDATE child_run SET worktree = ?, branch = ?, base_commit = ? WHERE num = ?", tree.worktree, tree.branch, tree.baseCommit, num);
+			const run = this.getChildRun(id) as ChildRun;
+			this.event(actor, `child:${id}`, "create", { after: run });
+			return run;
+		});
+	}
+
+	getChildRun(id: string): ChildRun | undefined {
+		const row = this.one("SELECT * FROM child_run WHERE num = ?", childRunNum(id));
+		return row ? toChildRun(row) : undefined;
+	}
+
+	listChildRuns(filter: { leadSession?: string; outcome?: ChildOutcome } = {}): ChildRun[] {
+		const where: string[] = [];
+		const params: Param[] = [];
+		if (filter.leadSession) {
+			where.push("lead_session = ?");
+			params.push(filter.leadSession);
+		}
+		if (filter.outcome) {
+			where.push("outcome = ?");
+			params.push(filter.outcome);
+		}
+		return this.all(`SELECT * FROM child_run${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY num`, ...params).map(toChildRun);
+	}
+
+	childRunForSession(sessionId: string): ChildRun | undefined {
+		const row = this.one("SELECT * FROM child_run WHERE child_session = ? ORDER BY num DESC LIMIT 1", sessionId);
+		return row ? toChildRun(row) : undefined;
+	}
+
+	updateChildRun(id: string, patch: ChildRunPatch): ChildRun {
+		if (!this.getChildRun(id)) throw new WorkStoreError(`Unknown child run: ${id}`);
+		const keys = (Object.keys(patch) as (keyof ChildRunPatch)[]).filter((key) => patch[key] !== undefined);
+		if (keys.length > 0) {
+			const value = (key: keyof ChildRunPatch): Param => (key === "flags" ? JSON.stringify(patch.flags) : (patch[key] as Param));
+			this.run(`UPDATE child_run SET ${keys.map((key) => `${CHILD_RUN_COLUMNS[key]} = ?`).join(", ")} WHERE num = ?`, ...keys.map(value), childRunNum(id));
+		}
+		return this.getChildRun(id) as ChildRun;
+	}
+
+	// Ends a running run once. Later calls (for example the lead, after the dashboard stopped the child) change nothing.
+	endChildRun(id: string, end: ChildRunEnd, actor: Actor): ChildRun {
+		return this.transaction(() => {
+			const before = this.getChildRun(id);
+			if (!before) throw new WorkStoreError(`Unknown child run: ${id}`);
+			if (before.outcome !== "running") return before;
+			this.run(
+				"UPDATE child_run SET outcome = ?, summary = ?, acceptance = ?, diff_lines = ?, diff_files = ?, ended_at = ? WHERE num = ?",
+				end.outcome,
+				(end.summary ?? before.summary).trim().slice(0, NOTE_MAX),
+				JSON.stringify(end.acceptance ?? before.acceptance),
+				end.diffLines ?? before.diffLines,
+				end.diffFiles ?? before.diffFiles,
+				this.now(),
+				childRunNum(id),
+			);
+			const after = this.getChildRun(id) as ChildRun;
+			this.event(actor, `child:${id}`, "end", { before, after });
+			return after;
+		});
+	}
+
+	markChildRunMerged(id: string, actor: Actor): ChildRun {
+		return this.transaction(() => {
+			const before = this.getChildRun(id);
+			if (!before) throw new WorkStoreError(`Unknown child run: ${id}`);
+			if (before.outcome !== "done") throw new WorkStoreError(`${id} is ${before.outcome}, not done`);
+			this.run("UPDATE child_run SET outcome = 'merged', merged_at = ? WHERE num = ?", this.now(), childRunNum(id));
+			const after = this.getChildRun(id) as ChildRun;
+			this.event(actor, `child:${id}`, "merge", { before, after });
+			return after;
+		});
+	}
+
+	markChildRunDiscarded(id: string, actor: Actor): ChildRun {
+		return this.transaction(() => {
+			const before = this.getChildRun(id);
+			if (!before) throw new WorkStoreError(`Unknown child run: ${id}`);
+			if (UNDISCARDABLE.includes(before.outcome)) throw new WorkStoreError(`${id} is ${before.outcome} and cannot be discarded`);
+			this.run("UPDATE child_run SET outcome = 'discarded', ended_at = COALESCE(ended_at, ?) WHERE num = ?", this.now(), childRunNum(id));
+			const after = this.getChildRun(id) as ChildRun;
+			this.event(actor, `child:${id}`, "discard", { before, after });
+			return after;
+		});
+	}
+
 	// Usage (operational: no events)
 
 	recordUsage(surface: UsageSurface, action: string, context: UsageContext): void {
@@ -910,7 +1075,7 @@ export class WorkStore {
 	}
 
 	isEmpty(): boolean {
-		for (const table of ["item", "link", "candidate", "plan", "dismissal", "job"]) {
+		for (const table of ["item", "link", "candidate", "plan", "dismissal", "job", "child_run"]) {
 			if (Number((this.one(`SELECT COUNT(*) AS n FROM ${table}`) as Row).n) > 0) return false;
 		}
 		return true;

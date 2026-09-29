@@ -221,3 +221,51 @@ export type JobInput = {
 export type UsageSurface = "dash" | "cli" | "pi" | "triage" | "planner";
 export type UsageContext = Record<string, number | boolean | string>;
 export type UsageRow = { id: number; at: string; surface: UsageSurface; action: string; context: UsageContext };
+export type ChildKind = "implement" | "read-only";
+export type ChildOutcome = "running" | "done" | "failed" | "over-budget" | "over-spend" | "incomplete" | "stopped" | "merged" | "discarded" | "interrupted";
+export type ChildEndOutcome = "done" | "failed" | "over-budget" | "over-spend" | "incomplete" | "stopped" | "interrupted";
+export type ChildFlag = "over-budget" | "over-spend" | "no-git" | "modified-files";
+export const CHILD_KINDS: readonly ChildKind[] = ["implement", "read-only"];
+
+export type Brief = {
+	goal: string;
+	kind: ChildKind;
+	scope: string[];
+	nonGoals: string[];
+	acceptance: string[];
+	context: string;
+	model: string | null;
+	modelReason: string | null;
+	from: string | null;
+};
+
+export type AcceptanceResult = { command: string; exitCode: number | null; summary: string };
+
+export type ChildRun = {
+	id: string;
+	leadSession: string;
+	childSession: string | null;
+	kind: ChildKind;
+	brief: Brief;
+	model: string;
+	repo: string | null;
+	worktree: string | null;
+	branch: string | null;
+	baseCommit: string | null;
+	pid: number | null;
+	outcome: ChildOutcome;
+	flags: ChildFlag[];
+	spendUsd: number;
+	diffLines: number;
+	diffFiles: number;
+	budgetLines: number | null;
+	budgetFiles: number | null;
+	acceptance: AcceptanceResult[];
+	summary: string;
+	createdAt: string;
+	endedAt: string | null;
+	mergedAt: string | null;
+};
+
+export type ChildRunInput = { leadSession: string; brief: Brief; model: string; repo: string | null; budgetLines: number | null; budgetFiles: number | null };
+export type ChildWorktree = { worktree: string; branch: string; baseCommit: string };

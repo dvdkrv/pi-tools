@@ -164,6 +164,7 @@ export function parseChildren(value: unknown, warnings: string[]): ChildrenConfi
 		repos,
 	};
 }
+
 export function parseWorkConfig(raw: string): LoadedConfig {
 	const warnings: string[] = [];
 	const config = emptyConfig();
