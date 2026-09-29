@@ -2,10 +2,14 @@ import { spawn } from "node:child_process";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { captureItem } from "../src/work/capture.ts";
-import { expandHome } from "../src/work/config.ts";
+import type { ChildGuard } from "../src/work/children/child-guard.ts";
+import { CHILD_RUN_ENV, createChildGuard, failClosedGuard, PARENT_PID_ENV } from "../src/work/children/child-guard.ts";
+import { runGit } from "../src/work/children/git.ts";
+import { startWatchdog } from "../src/work/children/watchdog.ts";
+import { childrenConfig, expandHome } from "../src/work/config.ts";
 import { registerAgentJob } from "../src/work/jobs.ts";
 import type { TmuxRunner } from "../src/work/planner.ts";
 import { defaultTmux, launchPlanner, PLANNER_ENV, shellQuote } from "../src/work/planner.ts";
@@ -35,6 +39,8 @@ export type WorkExtensionOptions = {
 	pid?: number;
 	signals?: SignalSource;
 	popup?: (args: string[]) => void;
+	childGit?: GitRunner;
+	watchdog?: typeof startWatchdog;
 };
 
 export const PROPOSE_DESCRIPTION = "Propose a follow-up for the user's work triage inbox. Use only for work outside your current task's scope, or for work you would otherwise leave as \"not done yet\" at the end of the session. Do not propose normal progress on your own task. The user reviews every proposal; this tool cannot create items, change status, or contact Jira.";
@@ -83,6 +89,52 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		});
 		let signalled = false;
 		let unwatch: (() => void) | undefined;
+		// Child mode: guards and a parent watchdog, active only when a lead started this session.
+		const childRunId = env[CHILD_RUN_ENV]?.trim() || undefined;
+		let guard: ChildGuard | undefined = childRunId ? failClosedGuard("Blocked: child guards have not started yet.") : undefined;
+		let stopWatchdog: (() => void) | undefined;
+		const startChild = (ctx: ExtensionContext): void => {
+			if (!childRunId) return;
+			try {
+				const r = rt();
+				const run = r.store.getChildRun(childRunId);
+				if (!run) throw new Error(`unknown child run ${childRunId}`);
+				guard = createChildGuard({
+					run,
+					config: childrenConfig(r.config),
+					cwd: ctx.cwd,
+					git: options.childGit ?? runGit,
+					record: (patch) => {
+						try {
+							rt().store.updateChildRun(run.id, patch);
+						} catch {
+							// Guards keep their state in memory; the next update records it again.
+						}
+					},
+					abort: () => ctx.abort(),
+				});
+			} catch (error) {
+				guard = failClosedGuard(`Blocked: the work registry is unavailable (${errorMessage(error)}), so child guards cannot run. End with session_status.`);
+			}
+			stopWatchdog ??= (options.watchdog ?? startWatchdog)(
+				() => {
+					ctx.abort();
+					ctx.shutdown();
+				},
+				{ parentPid: Number(env[PARENT_PID_ENV]) || undefined },
+			);
+		};
+		if (childRunId) {
+			pi.on("tool_call", async (event) => guard?.toolCall(event.toolName, event.input as Record<string, unknown>));
+			pi.on("tool_result", async (event) => {
+				const warning = guard?.toolResult(event.toolName);
+				return warning ? { content: [...event.content, { type: "text" as const, text: warning }] } : undefined;
+			});
+			pi.on("message_end", async (event) => {
+				const message = event.message as unknown as { role?: string; usage?: { cost?: { total?: number } } };
+				if (message.role === "assistant") guard?.assistantCost(message.usage?.cost?.total ?? 0);
+			});
+		}
 
 		const refreshBadge = (ctx: StatusContext): void => {
 			try {
@@ -234,12 +286,16 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 				name: ctx.sessionManager.getSessionName() ?? null,
 				mode: ctx.mode,
 			});
+			startChild(ctx);
 		});
 		pi.on("input", async (event) => {
 			tracker.input(event.text, event.source);
 		});
 		pi.on("agent_start", async () => tracker.agentStart());
-		pi.on("agent_end", async (event) => tracker.agentEnd(event.messages));
+		pi.on("agent_end", async (event) => {
+			tracker.agentEnd(event.messages);
+			guard?.agentEnd();
+		});
 		pi.on("session_info_changed", async (event) => tracker.rename(event.name ?? null));
 		pi.on("session_shutdown", async (event) => {
 			// Pi's own signal handler starts shutdown before this extension's listener runs; yield once so it can.
@@ -247,6 +303,8 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			tracker.shutdown(shutdownIsClean({ reason: event.reason, signalled, pane: tracker.pane, tmux: sessionTmux }));
 			unwatch?.();
 			unwatch = undefined;
+			stopWatchdog?.();
+			stopWatchdog = undefined;
 		});
 	};
 }
