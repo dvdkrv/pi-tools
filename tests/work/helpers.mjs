@@ -1,7 +1,8 @@
 import { createJiti } from 'jiti';
-import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const jiti = createJiti(import.meta.url);
@@ -60,4 +61,46 @@ export function captureIo(answers = []) {
     err,
     asked,
   };
+}
+
+export function git(cwd, ...args) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+export function writeFiles(dir, files) {
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), content);
+  }
+}
+
+// A committed repository on main with a local identity, no commit signing, and no hooks.
+export function gitRepo(files = { 'README.md': 'hello\n' }) {
+  const dir = realpathSync(tempDir());
+  git(dir, 'init', '-q', '-b', 'main');
+  configureGit(dir);
+  writeFiles(dir, files);
+  git(dir, 'add', '-A');
+  git(dir, 'commit', '-q', '-m', 'initial');
+  return dir;
+}
+
+export function configureGit(dir) {
+  for (const [key, value] of [['user.email', 'pi@example.com'], ['user.name', 'Pi Test'], ['commit.gpgsign', 'false'], ['core.hooksPath', '/dev/null']]) {
+    git(dir, 'config', key, value);
+  }
+}
+
+export function readJsonl(path) {
+  return existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
+}
+
+export async function until(check, timeoutMs = 5000) {
+  const end = Date.now() + timeoutMs;
+  for (;;) {
+    const value = check();
+    if (value) return value;
+    if (Date.now() > end) throw new Error('timed out waiting for a condition');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
