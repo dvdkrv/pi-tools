@@ -196,15 +196,27 @@ The dashboard is a standalone Node program with a small built-in renderer (alter
 
 ### Layout
 
-Sections are stacked vertically, each with a count. Empty sections collapse to one line.
+Sections are stacked vertically, each with a count. Empty sections are hidden. When every section is empty, one dim line says so. All row kinds share one set of column widths, and a child row indents inside the name column, so status words line up.
+
+The header shows the host name and the time of the last successful reload, plus `stale Ns` when a reload fails. The hint line depends on the selected row, for example `enter jump` for a live session or `enter details · c check` for a job, and always ends with `? all keys`.
+
+Color marks the status word only: yellow for `needs-me`, cyan for `waiting`. Whole rows are red for `crashed` and `unhealthy`, and dim for ended sessions and stopped jobs.
 
 1. **Decisions:** live sessions in `needs-me`, sorted by longest waiting, each showing the window, item, how long it has waited, and the note. It also contains one line for pending triage candidates, and one line per `unhealthy` job.
 2. **Waiting:** live sessions in `waiting-external`, with the note and duration.
 3. **Working:** live sessions in `working`.
-4. **Jobs:** every job that isn't stopped, showing health, name, schedule, last check age, and summary. Stopped jobs are dimmed at the end.
+4. **Jobs:** every job that isn't stopped and isn't already listed in Decisions, showing health, name, schedule, last check age, and summary. Stopped jobs are dimmed at the end.
 5. **Other sessions:** live `done` sessions, then closed and crashed sessions from the last 7 days.
 
 Example row: `needs-me  sap-rfc  W-7  12m  "Trim the overview to 1.5k words?"`
+
+### Host panel
+
+From 140 columns up, a host panel of about 52 columns sits to the right of the sections, behind a `│` separator. Below 140 columns it shrinks to one strip line under the header: load per CPU, CPU, memory, the fullest disk, Pi process count, and orphan count.
+
+The panel shows: uptime, CPU count, and load; total and per-core CPU (one block character per core); memory and swap; cgroup v2 memory, CPU, and pids limits when set; disks; the top 3 processes by CPU and by memory; `pi` processes against live sessions; and orphans (processes whose parent is PID 1, grouped by name, groups of 2 or more). Values turn yellow at 80% and red at 95%.
+
+Data comes only from `/proc`, cgroup v2 files, and `statfs`, with no subprocess. Disks are the mounts in `/proc/self/mounts`, skipping pseudo, network, and FUSE filesystems (statfs can hang on those) and tmpfs outside `/tmp`, one line per filesystem under its shortest mount point. CPU percentages are deltas between refreshes, so the first frame leaves them blank. Per-process data comes from reading `/proc/<pid>/stat` asynchronously, which takes about 25 ms for 2,000 processes. Collection never throws: a missing source leaves its line out.
 
 ### Keys
 
