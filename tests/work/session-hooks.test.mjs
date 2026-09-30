@@ -166,7 +166,8 @@ test('session_status has a static schema and the spec description', async () => 
   const s = setup({ runtime: rt });
   const tool = s.tools.get('session_status');
   assert.equal(tool.description, SESSION_STATUS_DESCRIPTION);
-  assert.match(tool.description, /^Declare this session's state as your final action in a turn/);
+  assert.match(tool.description, /^Write your complete reply to the user as visible text first/);
+  assert.match(tool.description, /cannot see your thinking/);
   assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ['note', 'status']);
   assert.equal(Object.hasOwn(tool, 'promptSnippet'), false);
   const early = await tool.execute('c0', { status: 'done', note: 'Shipped' }, undefined, undefined, s.ctx);
@@ -247,4 +248,32 @@ test('shutdownIsClean covers every combination', () => {
   assert.equal(shutdownIsClean({ reason: 'quit', signalled: true, pane: '%1', tmux: panes(['%1']) }), false);
   assert.equal(shutdownIsClean({ reason: 'quit', signalled: true, pane: '%1', tmux: panes(null) }), false);
   assert.equal(shutdownIsClean({ reason: 'quit', signalled: true, pane: '%1', tmux: panes(['%2']) }), true);
+});
+
+test('session_status reminds the agent to write its reply when the run has no visible text yet', async () => {
+  const rt = await memoryRuntime();
+  const s = setup({ runtime: rt });
+  await s.emit('session_start', { reason: 'startup' });
+  await s.emit('agent_start');
+  // The reply was drafted only in thinking, then the tool was called.
+  await s.emit('message_end', { message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Should I save the plan?' }, { type: 'toolCall', name: 'session_status', arguments: {} }] } });
+  const hidden = await s.tools.get('session_status').execute('c1', { status: 'needs-me', note: 'Save the plan?' }, undefined, undefined, s.ctx);
+  assert.match(hidden.content[0].text, /^Recorded needs-me\. Your reply is not visible yet: the user cannot see your thinking\. Write your full answer now\.$/);
+  assert.equal(hidden.details.recorded, true);
+
+  // A later run that already showed text gets the plain confirmation.
+  await s.emit('agent_start');
+  await s.emit('message_end', { message: assistant('Here is the plan. Should I save it?') });
+  const visible = await s.tools.get('session_status').execute('c2', { status: 'needs-me', note: 'Save the plan?' }, undefined, undefined, s.ctx);
+  assert.equal(visible.content[0].text, 'Recorded needs-me.');
+});
+
+test('whitespace-only text does not count as a visible reply', async () => {
+  const rt = await memoryRuntime();
+  const s = setup({ runtime: rt });
+  await s.emit('session_start', { reason: 'startup' });
+  await s.emit('agent_start');
+  await s.emit('message_end', { message: assistant('  \n ') });
+  const result = await s.tools.get('session_status').execute('c1', { status: 'done', note: 'Finished' }, undefined, undefined, s.ctx);
+  assert.match(result.content[0].text, /Your reply is not visible yet/);
 });

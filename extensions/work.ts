@@ -53,7 +53,7 @@ export type WorkExtensionOptions = {
 
 export const PROPOSE_DESCRIPTION = "Propose a follow-up for the user's work triage inbox. Use only for work outside your current task's scope, or for work you would otherwise leave as \"not done yet\" at the end of the session. Do not propose normal progress on your own task. The user reviews every proposal; this tool cannot create items, change status, or contact Jira.";
 
-export const SESSION_STATUS_DESCRIPTION = "Declare this session's state as your final action in a turn: `needs-me` when you are asking the user a question or need a decision (note: the question), `waiting-external` when blocked on CI, review, a deploy, or another person (note: what and why), `done` when the task is complete (note: one-line outcome). Call at most once per turn.";
+export const SESSION_STATUS_DESCRIPTION = "Write your complete reply to the user as visible text first; the user cannot see your thinking. Then, as the very last step of the turn, declare this session's state: `needs-me` when you are asking the user a question or need a decision (note: the question), `waiting-external` when blocked on CI, review, a deploy, or another person (note: what and why), `done` when the task is complete (note: one-line outcome). Call at most once per turn.";
 
 export const JOB_REGISTER_DESCRIPTION = "Register a background job you started, such as a cron entry or a long-running process, so the user can see its health on the work dashboard. Give a check_command that exits 0 when the job is healthy, and a stop_command when stopping needs more than SIGTERM to pid. Registering the same name again updates the job.";
 
@@ -100,6 +100,8 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		// Child mode: guards and a parent watchdog, active only when a lead started this session.
 		const childRunId = env[CHILD_RUN_ENV]?.trim() || undefined;
 		let guard: ChildGuard | undefined = childRunId ? failClosedGuard("Blocked: child guards have not started yet.") : undefined;
+		// Whether the current agent run has shown the user any non-empty text (see session_status).
+		let visibleTextThisRun = false;
 		let stopWatchdog: (() => void) | undefined;
 		const startChild = (ctx: ExtensionContext): void => {
 			if (!childRunId) return;
@@ -137,10 +139,6 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			pi.on("tool_result", async (event) => {
 				const warning = guard?.toolResult(event.toolName);
 				return warning ? { content: [...event.content, { type: "text" as const, text: warning }] } : undefined;
-			});
-			pi.on("message_end", async (event) => {
-				const message = event.message as unknown as { role?: string; usage?: { cost?: { total?: number } } };
-				if (message.role === "assistant") guard?.assistantCost(message.usage?.cost?.total ?? 0);
 			});
 		}
 		// Lead mode: delegation tools in every session that is not itself a child (only TUI sessions keep them active).
@@ -237,7 +235,9 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			}),
 			async execute(_toolCallId, params) {
 				const recorded = tracker.declare(params.status, params.note);
-				const text = recorded ? `Recorded ${params.status}.` : "Session status is not being recorded for this session.";
+				// Models often draft the reply only in thinking and then call this tool; make them write it.
+				const reminder = visibleTextThisRun ? "" : " Your reply is not visible yet: the user cannot see your thinking. Write your full answer now.";
+				const text = recorded ? `Recorded ${params.status}.${reminder}` : `Session status is not being recorded for this session.${reminder}`;
 				return { content: [{ type: "text", text }], details: { recorded } };
 			},
 		});
@@ -331,7 +331,19 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		pi.on("input", async (event) => {
 			tracker.input(event.text, event.source);
 		});
-		pi.on("agent_start", async () => tracker.agentStart());
+		pi.on("agent_start", async () => {
+			visibleTextThisRun = false;
+			tracker.agentStart();
+		});
+		pi.on("message_end", async (event) => {
+			const message = event.message as unknown as { role?: string; content?: unknown; usage?: { cost?: { total?: number } } };
+			if (message.role !== "assistant") return;
+			if (Array.isArray(message.content) && message.content.some((part) => {
+				const block = part as { type?: string; text?: string };
+				return block.type === "text" && typeof block.text === "string" && block.text.trim().length > 0;
+			})) visibleTextThisRun = true;
+			if (childRunId) guard?.assistantCost(message.usage?.cost?.total ?? 0);
+		});
 		pi.on("agent_end", async (event) => {
 			tracker.agentEnd(event.messages);
 			guard?.agentEnd();
