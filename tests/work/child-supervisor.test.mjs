@@ -136,3 +136,100 @@ test('format helpers shorten model names and keep the last output line', () => {
   assert.equal(lastLine('running 3 tests\n\x1b[32mpass 3\x1b[0m\n\n'), '[32mpass 3 [0m');
   assert.equal(lastLine(''), '');
 });
+
+const promptSent = (l) => until(() => commandsIn(l.log).includes('prompt'));
+
+test('steer_child sends an urgent steer or a follow-up, and a settled over-budget child reports over-budget', async () => {
+  const l = await lead({ behavior: { onPrompt: 'hang', settleOnFollowUp: true } });
+  l.supervisor.delegate('lead-1', l.repo, implement());
+  await promptSent(l);
+  assert.match(await l.supervisor.steer('lead-1', 'C-1', 'Use exponential backoff', true), /^Steered C-1/);
+  l.store.updateChildRun('C-1', { flags: ['over-budget'] });
+  assert.match(await l.supervisor.steer('lead-1', 'C-1', 'Wrap up', false), /^Queued for C-1/);
+  await until(() => l.messages.length === 1);
+  assert.equal(l.store.getChildRun('C-1').outcome, 'over-budget');
+  const sent = readJsonl(l.log).filter((entry) => ['steer', 'follow_up'].includes(entry.command?.type)).map((entry) => [entry.command.type, entry.command.message]);
+  assert.deepEqual(sent, [['steer', 'Use exponential backoff'], ['follow_up', 'Wrap up']]);
+  assert.match(await l.supervisor.steer('lead-1', 'C-1', 'more', false), /^C-1 is over-budget and can no longer be steered\. Delegate again with from: C-1/);
+  assert.match(await l.supervisor.steer('lead-2', 'C-1', 'x', false), /^C-1 is not one of your child runs/);
+});
+
+test('stop_child aborts and ends the child without a message, and discard removes its worktree and branch', async () => {
+  const l = await lead({ behavior: { onPrompt: 'hang' } });
+  l.supervisor.delegate('lead-1', l.repo, implement());
+  await promptSent(l);
+  assert.match(await l.supervisor.stop('lead-1', 'C-1', false), /^Stopped C-1\. Its worktree and branch are kept \(child\/feat\/x\/C-1\)\./);
+  const run = l.store.getChildRun('C-1');
+  assert.equal(run.outcome, 'stopped');
+  assert.equal(existsSync(run.worktree), true);
+  assert.ok(commandsIn(l.log).includes('abort'));
+  assert.throws(() => process.kill(run.pid, 0), /ESRCH/);
+  assert.match(await l.supervisor.stop('lead-1', 'C-1', false), /^C-1 already ended as stopped/);
+  assert.equal(await l.supervisor.stop('lead-1', 'C-1', true), 'Discarded C-1: removed its worktree and branch.');
+  assert.equal(l.store.getChildRun('C-1').outcome, 'discarded');
+  assert.equal(existsSync(run.worktree), false);
+  assert.equal(git(l.repo, 'branch', '--list', 'child/feat/x/C-1'), '');
+  assert.equal(await l.supervisor.stop('lead-1', 'C-1', true), 'C-1 is already discarded.');
+  assert.deepEqual(l.messages, []);
+});
+
+test('a child stopped from the dashboard is reported to the lead once', async () => {
+  const l = await lead({ behavior: { onPrompt: 'hang' } });
+  l.supervisor.delegate('lead-1', l.repo, implement());
+  await promptSent(l);
+  l.store.endChildRun('C-1', { outcome: 'stopped', summary: 'stopped from the dashboard' }, 'user');
+  process.kill(l.store.getChildRun('C-1').pid, 'SIGTERM');
+  await until(() => l.messages.length === 1);
+  assert.match(l.messages[0], /^Child C-1 finished: stopped\nGoal: Add retry to fetchJira\nSummary: stopped from the dashboard/);
+});
+
+test('shutdownAll ends even a stubborn child and leaves its run for recovery', async () => {
+  const l = await lead({ behavior: { onPrompt: 'hang', ignoreStdinClose: true, ignoreTerm: true } });
+  l.supervisor.delegate('lead-1', l.repo, implement());
+  await promptSent(l);
+  await l.supervisor.shutdownAll();
+  const log = readJsonl(l.log);
+  assert.ok(log.some((entry) => entry.stdin === 'closed'));
+  assert.ok(log.some((entry) => entry.signal === 'SIGTERM'));
+  assert.throws(() => process.kill(l.store.getChildRun('C-1').pid, 0), /ESRCH/);
+  assert.equal(l.store.getChildRun('C-1').outcome, 'running');
+  assert.deepEqual(l.messages, []);
+  const restarted = createSupervisor({ store: () => l.store, config: () => DEFAULT_CHILDREN, notify: () => {} });
+  assert.deepEqual(restarted.recover('lead-1').map((run) => [run.id, run.outcome]), [['C-1', 'interrupted']]);
+  assert.deepEqual(restarted.recover('lead-1'), []);
+});
+
+test('recover signals only a PID whose environment names the run', async () => {
+  const rt = await memoryRuntime();
+  const sleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  const brief = { goal: 'Map the auth flow', kind: 'read-only', scope: [], nonGoals: [], acceptance: [], context: '', model: null, modelReason: null, from: null };
+  for (const pid of [sleeper.pid, 999_999]) {
+    const run = rt.store.createChildRun({ leadSession: 'lead-1', brief, model: 'anthropic/claude-sonnet-5', repo: null, budgetLines: null, budgetFiles: null }, 'session:lead-1');
+    rt.store.updateChildRun(run.id, { pid });
+  }
+  const readers = { kill: () => {}, environ: (pid) => (pid === sleeper.pid ? 'HOME=/h\0PI_WORK_CHILD_RUN=C-1\0' : undefined) };
+  const supervisor = createSupervisor({ store: () => rt.store, config: () => DEFAULT_CHILDREN, notify: () => {}, readers });
+  assert.deepEqual(supervisor.recover('lead-1').map((run) => run.id), ['C-1', 'C-2']);
+  await until(() => sleeper.signalCode === 'SIGTERM');
+});
+
+test('from continues an earlier run: the new worktree starts at its branch, and the old run is discarded', async () => {
+  const l = await lead({ behavior: { commit: COMMIT }, declared: null });
+  l.supervisor.delegate('lead-1', l.repo, implement());
+  await until(() => l.messages.length === 1);
+  const first = l.store.getChildRun('C-1');
+  assert.equal(first.outcome, 'incomplete');
+  writeFiles(first.worktree, { 'src/extra.ts': 'x\n' });
+  const tip = git(first.worktree, 'rev-parse', 'HEAD');
+  const second = l.supervisor.delegate('lead-1', l.repo, implement({ from: 'C-1' }));
+  assert.equal(second.ok, true);
+  assert.equal(second.run.baseCommit, first.baseCommit);
+  assert.equal(git(second.run.worktree, 'rev-parse', 'HEAD~1'), tip);
+  assert.equal(git(second.run.worktree, 'log', '-1', '--format=%s'), 'WIP: uncommitted work from C-1');
+  assert.equal(l.store.getChildRun('C-1').outcome, 'discarded');
+  assert.equal(existsSync(first.worktree), false);
+  assert.equal(git(l.repo, 'branch', '--list', 'child/feat/x/C-1'), '');
+  assert.match(l.supervisor.delegate('lead-1', l.repo, implement({ from: 'C-1' })).message, /^Refused: C-1 is discarded\./);
+  assert.match(l.supervisor.delegate('lead-1', l.repo, implement({ from: 'C-7' })).message, /^Refused: C-7 is not one of your implement runs\./);
+  await until(() => l.messages.length === 2);
+});

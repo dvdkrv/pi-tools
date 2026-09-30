@@ -5,6 +5,7 @@ import type { ShellRunner } from "../jobs.ts";
 import { runShell } from "../jobs.ts";
 import { WORK_ITEM_ENV } from "../linking.ts";
 import type { PidReaders } from "../liveness.ts";
+import { systemPidReaders } from "../liveness.ts";
 import type { GitRunner } from "../rules.ts";
 import { repoFromCwd } from "../rules.ts";
 import { errorMessage } from "../secrets.ts";
@@ -21,6 +22,7 @@ import type { RpcChild } from "./rpc.ts";
 import { spawnRpcChild } from "./rpc.ts";
 
 export const KILL_GRACE_MS = 10_000;
+export const ABORT_TIMEOUT_MS = 5_000;
 
 export type SupervisorDeps = {
 	store: () => WorkStore;
@@ -38,6 +40,10 @@ export type DelegateResult = { ok: true; run: ChildRun; message: string } | { ok
 export type Supervisor = {
 	delegate(leadSession: string, cwd: string, params: BriefParams): DelegateResult;
 	list(leadSession: string): string;
+	steer(leadSession: string, id: string, text: string, urgent: boolean): Promise<string>;
+	stop(leadSession: string, id: string, discard: boolean): Promise<string>;
+	recover(leadSession: string): ChildRun[];
+	shutdownAll(): Promise<void>;
 };
 
 type Handle = { child: RpcChild; started: boolean; stopping: boolean; finished: boolean };
@@ -61,6 +67,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 		const resolved = resolveBrief(params, config, repo);
 		if ("error" in resolved) return { ok: false, message: `Refused: ${resolved.error.replace(/\.?$/, ".")}` };
 		let prepare: ((id: string) => ChildWorktree) | undefined;
+		let previous: ChildRun | undefined;
 		let root: string | undefined;
 		if (resolved.brief.kind === "implement") {
 			root = gitText(git, cwd, ["rev-parse", "--show-toplevel"]);
@@ -74,8 +81,16 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 			if (!isClean(git, cwd)) {
 				return { ok: false, message: "Refused: your working tree has uncommitted changes. Commit them first, so the child starts from your current HEAD." };
 			}
-			const start = git(cwd, ["rev-parse", "HEAD"]);
-			const baseCommit = start;
+			let start = git(cwd, ["rev-parse", "HEAD"]);
+			let baseCommit = start;
+			if (resolved.brief.from) {
+				previous = find(leadSession, resolved.brief.from);
+				if (!previous?.branch || !previous.baseCommit) return { ok: false, message: `Refused: ${resolved.brief.from} is not one of your implement runs.` };
+				if (["running", "merged", "discarded"].includes(previous.outcome)) return { ok: false, message: `Refused: ${previous.id} is ${previous.outcome}.` };
+				commitLeftovers(previous);
+				start = previous.branch;
+				baseCommit = previous.baseCommit;
+			}
 			const repoRoot = root;
 			prepare = (id) => {
 				const worktree = join(repoRoot, ".pi", "worktrees", `child-${id}`);
@@ -90,6 +105,11 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 			run = store.createChildRun(input, `session:${leadSession}`, prepare);
 		} catch (error) {
 			return { ok: false, message: `Refused: could not create the child run: ${errorMessage(error)}` };
+		}
+		// The new branch holds the earlier run's commits, so the earlier worktree and branch can go.
+		if (previous && root) {
+			removeWorktree(git, root, previous.worktree, previous.branch);
+			store.markChildRunDiscarded(previous.id, actorOf(previous));
 		}
 		launch(run, cwd, config);
 		const where = run.branch ? `on ${run.branch}` : "(read-only, in your working directory)";
@@ -218,5 +238,104 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 			.join("\n");
 	}
 
-	return { delegate, list };
+	function find(leadSession: string, id: string): ChildRun | undefined {
+		try {
+			const run = deps.store().getChildRun(id);
+			return run?.leadSession === leadSession ? run : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	function commitLeftovers(run: ChildRun): void {
+		if (!run.worktree) return;
+		try {
+			if (git(run.worktree, ["status", "--porcelain"]) === "") return;
+			git(run.worktree, ["add", "-A"]);
+			git(run.worktree, ["commit", "--no-verify", "-q", "-m", `WIP: uncommitted work from ${run.id}`]);
+		} catch {
+			// The worktree may be gone already; its branch still holds the committed work.
+		}
+	}
+
+	async function steer(leadSession: string, id: string, text: string, urgent: boolean): Promise<string> {
+		const run = find(leadSession, id);
+		if (!run) return `${id} is not one of your child runs.`;
+		const handle = handles.get(id);
+		if (!handle || handle.stopping) {
+			const state = run.outcome === "running" ? "finishing" : run.outcome;
+			return `${id} is ${state} and can no longer be steered. Delegate again${run.kind === "implement" ? ` with from: ${id}` : ""} to continue.`;
+		}
+		try {
+			await handle.child.request({ type: urgent ? "steer" : "follow_up", message: text });
+		} catch (error) {
+			return `Could not reach ${id}: ${errorMessage(error)}`;
+		}
+		return urgent ? `Steered ${id}: it reads your message after its current tool calls.` : `Queued for ${id}: it reads your message at its next quiet moment.`;
+	}
+
+	async function stop(leadSession: string, id: string, discardToo: boolean): Promise<string> {
+		const run = find(leadSession, id);
+		if (!run) return `${id} is not one of your child runs.`;
+		const handle = handles.get(id);
+		const wasRunning = handle !== undefined || run.outcome === "running";
+		if (handle) {
+			handle.stopping = true;
+			try {
+				await handle.child.request({ type: "abort" }, ABORT_TIMEOUT_MS);
+			} catch {
+				// The shutdown below ends it anyway.
+			}
+			await finish(id, { kind: "settled" });
+			await handle.child.shutdown(grace);
+		} else if (run.outcome === "running") {
+			killOrphan(run);
+			deps.store().endChildRun(id, { outcome: "stopped", summary: "stopped by the lead" }, actorOf(run));
+		}
+		if (discardToo) return discard(id);
+		if (!wasRunning) return `${id} already ended as ${run.outcome}. Pass discard: true to remove its worktree and branch.`;
+		return `Stopped ${id}. Its worktree and branch are kept${run.branch ? ` (${run.branch})` : ""}.`;
+	}
+
+	function discard(id: string): string {
+		const store = deps.store();
+		const run = store.getChildRun(id) as ChildRun;
+		if (run.outcome === "merged" || run.outcome === "discarded") return `${id} is already ${run.outcome}.`;
+		const root = rootOf(run);
+		if (root) removeWorktree(git, root, run.worktree, run.branch);
+		store.markChildRunDiscarded(id, actorOf(run));
+		return `Discarded ${id}${root ? ": removed its worktree and branch" : ""}.`;
+	}
+
+	// Only a PID whose environment names this run is signalled, so a reused PID is never hit.
+	function killOrphan(run: ChildRun): void {
+		const environ = run.pid ? (deps.readers ?? systemPidReaders).environ(run.pid) : undefined;
+		if (!run.pid || !environ?.split("\0").includes(`${CHILD_RUN_ENV}=${run.id}`)) return;
+		try {
+			process.kill(run.pid, "SIGTERM");
+		} catch {
+			// It exited meanwhile.
+		}
+	}
+
+	function recover(leadSession: string): ChildRun[] {
+		const store = deps.store();
+		return store
+			.listChildRuns({ leadSession, outcome: "running" })
+			.filter((run) => !handles.has(run.id))
+			.map((run) => {
+				killOrphan(run);
+				return store.endChildRun(run.id, { outcome: "interrupted", summary: "the lead session ended while this child was running" }, actorOf(run));
+			});
+	}
+
+	// A clean lead shutdown ends the processes but records nothing, so the next lead start reports the runs.
+	async function shutdownAll(): Promise<void> {
+		const all = [...handles.values()];
+		handles.clear();
+		for (const handle of all) handle.finished = true;
+		await Promise.all(all.map((handle) => handle.child.shutdown(grace)));
+	}
+
+	return { delegate, list, steer, stop, recover, shutdownAll };
 }
