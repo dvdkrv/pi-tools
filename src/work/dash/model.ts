@@ -57,12 +57,15 @@ export function buildDashModel(input: DashInput): DashModel {
 	const jobs = input.jobs ?? [];
 	const decisions = rows(live.filter((s) => s.status === "needs-me").sort(byStatusAt));
 	if (input.triageCount > 0) decisions.push({ kind: "triage", key: "triage", count: input.triageCount });
+	const alerted = new Set<string>();
 	for (const job of jobs) {
-		if (!job.stoppedAt && job.lastCheckStatus === "unhealthy") decisions.push({ kind: "alert", key: `alert:${job.id}`, job });
+		if (job.stoppedAt || job.lastCheckStatus !== "unhealthy") continue;
+		decisions.push({ kind: "alert", key: `alert:${job.id}`, job });
+		alerted.add(job.id);
 	}
 	const waiting = rows(live.filter((s) => s.status === "waiting-external").sort(byStatusAt));
 	const working = rows(live.filter((s) => s.status === "working").sort(byStatusAt));
-	const jobRows: DashRow[] = jobs.map((job) => ({ kind: "job", key: `job:${job.id}`, job }));
+	const jobRows: DashRow[] = jobs.filter((job) => !alerted.has(job.id)).map((job) => ({ kind: "job", key: `job:${job.id}`, job }));
 	const done = live.filter((s) => s.status === "done").sort((a, b) => byStatusAt(b, a));
 	const ended = top.filter((s) => s.liveness !== "live").sort(byRecentActivity);
 	const other = rows([...done, ...ended]);

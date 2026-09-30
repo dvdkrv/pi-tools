@@ -81,7 +81,7 @@ test('the dashboard shows parents with their children and jumps to a live sessio
   assert.equal(screen[0], 'Work dashboard');
   assert.equal(screen[1], 'Decisions (1)');
   assert.match(screen[2], /^> needs-me\s+sap-rfc\s+-\s+0s\s+"Trim the overview\?"$/);
-  assert.match(screen[3], /^ {4}needs-me\s+impl-parser\s+-\s+0s\s+"new session"$/);
+  assert.match(screen[3], /^ {2}needs-me\s+impl-parser\s+-\s+0s\s+"new session"$/);
   assert.ok(screen.includes('Other sessions (1)'));
   assert.match(screen.find((line) => line.includes('crashed')), /infra/);
   d.terminal.send('\r');
@@ -257,7 +257,7 @@ async function jobFixture() {
 test('an unhealthy job is a decision, and Enter shows its details', async () => {
   const { rt } = await jobFixture();
   const d = open(rt);
-  assert.match(d.terminal.screen()[4], /^ {2}unhealthy\s+dev-server\s+process\s+0s\s+connection refused$/);
+  assert.match(d.terminal.screen()[4], /^ {2}unhealthy\s+dev-server\s+\S+\s+0s\s+connection refused$/);
   d.terminal.send('j', 'j', '\r');
   await tick();
   const screen = d.terminal.screen();
@@ -274,7 +274,7 @@ test('an unhealthy job is a decision, and Enter shows its details', async () => 
 test('c checks the selected job in the background', async () => {
   const { rt, store } = await jobFixture();
   const d = open(rt, { run: async () => ({ code: 0, output: 'up\n', timedOut: false }) });
-  d.terminal.send('j', 'j', 'j', 'c');
+  d.terminal.send('j', 'j', 'c');
   await tick();
   await tick();
   assert.deepEqual(d.ran, ['curl -fs localhost:8080']);
@@ -288,7 +288,7 @@ test('c checks the selected job in the background', async () => {
 test('x then y stops a job with its stop command; D then y deletes only stopped jobs', async () => {
   const { rt, store } = await jobFixture();
   const d = open(rt);
-  d.terminal.send('j', 'j', 'j', 'D');
+  d.terminal.send('j', 'j', 'D');
   assert.equal(d.terminal.screen().at(-1), 'Stop the job before deleting it');
   d.terminal.send('x');
   assert.match(d.terminal.screen().at(-1), /^Stop J-1 dev-server\? y to confirm/);

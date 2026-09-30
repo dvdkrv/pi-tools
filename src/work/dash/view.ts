@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import type { DashModel, DashRow, SessionEntry } from "./model.ts";
 import { allRows, lastActivity } from "./model.ts";
-import type { Style } from "./text.ts";
+import type { Color, Style } from "./text.ts";
 import { fit, formatAge, oneLine, sanitize, truncate, visibleWidth } from "./text.ts";
 import { modelShortName } from "../children/format.ts";
 import type { ChildRun } from "../types.ts";
@@ -14,10 +14,10 @@ type Caps = readonly [number, number, number];
 export const HINTS = "j/k move · enter open · L link · D delete · / filter · ? help · q quit";
 const LABEL_WIDTH = 9;
 const GAP = "  ";
-const SESSION_CAPS: { narrow: Caps; wide: Caps } = { narrow: [16, 6, 4], wide: [28, 40, 4] };
-const JOB_CAPS: { narrow: Caps; wide: Caps } = { narrow: [20, 12, 4], wide: [32, 20, 4] };
+const CAPS: { narrow: Caps; wide: Caps } = { narrow: [14, 6, 4], wide: [28, 40, 4] };
 
-const isJobRow = (row: DashRow): boolean => row.kind === "job" || row.kind === "alert";
+// A child row keeps its label in the label column and indents inside the window column.
+const indentWidth = (row: DashRow): number => (row.kind === "session" && row.depth === 1 ? 2 : 0);
 
 export function sessionLabel(session: SessionEntry): string {
 	if (session.liveness !== "live") return session.liveness;
@@ -64,18 +64,24 @@ export function filterModel(model: DashModel, filter: string): DashModel {
 }
 
 function widths(rows: readonly DashRow[], now: Date, wide: boolean, caps: Caps): Widths {
-	const cells = rows.map((row) => rowCells(row, now, wide));
-	const max = (pick: (cell: Cells) => string, cap: number): number => Math.min(cap, Math.max(1, ...cells.map((cell) => visibleWidth(pick(cell)))));
-	return { window: max((c) => c.window, caps[0]), item: max((c) => c.item, caps[1]), age: max((c) => c.age, caps[2]) };
+	const cells = rows.map((row) => [rowCells(row, now, wide), indentWidth(row)] as const);
+	const max = (pick: (cell: Cells) => string, cap: number, indented = false): number =>
+		Math.min(cap, Math.max(1, ...cells.map(([cell, indent]) => visibleWidth(pick(cell)) + (indented ? indent : 0))));
+	return { window: max((c) => c.window, caps[0], true), item: max((c) => c.item, caps[1]), age: max((c) => c.age, caps[2]) };
 }
 
-function rowText(row: DashRow, now: Date, wide: boolean, w: { session: Widths; job: Widths }, width: number): string {
+function rowText(row: DashRow, now: Date, wide: boolean, w: Widths, width: number): string {
 	const cells = rowCells(row, now, wide);
 	if (row.kind === "triage") return truncate(`${fit(cells.label, LABEL_WIDTH)}${GAP}${cells.note}`, width);
-	const cw = isJobRow(row) ? w.job : w.session;
-	const indent = row.kind === "session" && row.depth === 1 ? "  " : "";
-	const head = [fit(cells.label, LABEL_WIDTH), fit(cells.window, cw.window), fit(cells.item, cw.item), cells.age.padStart(cw.age)].join(GAP);
-	return truncate(`${indent}${head}${GAP}${cells.note}`, width);
+	const window = `${" ".repeat(indentWidth(row))}${cells.window}`;
+	const head = [fit(cells.label, LABEL_WIDTH), fit(window, w.window), fit(cells.item, w.item), cells.age.padStart(w.age)].join(GAP);
+	return truncate(`${head}${GAP}${cells.note}`, width);
+}
+
+// The label is the first word of a plain row, so styling it never splits an escape sequence.
+function colorLabel(line: string, label: string, color: Color, style: Style): string {
+	const at = line.indexOf(label);
+	return at < 0 ? line : `${line.slice(0, at)}${style.color(color, label)}${line.slice(at + label.length)}`;
 }
 
 function styleRow(row: DashRow, line: string, style: Style): string {
@@ -85,23 +91,23 @@ function styleRow(row: DashRow, line: string, style: Style): string {
 		return row.job.lastCheckStatus === "unhealthy" ? style.color("red", line) : line;
 	}
 	if (row.kind !== "session") return line;
-	if (row.session.liveness === "crashed") return style.color("red", line);
-	if (row.session.liveness === "closed" || row.session.status === "done") return style.dim(line);
-	if (row.session.status === "needs-me" && row.depth === 0) return style.color("yellow", line);
+	const session = row.session;
+	if (session.liveness === "crashed") return style.color("red", line);
+	if (session.liveness === "closed" || session.status === "done") return style.dim(line);
+	if (session.status === "needs-me") return colorLabel(line, sessionLabel(session), "yellow", style);
+	if (session.status === "waiting-external") return colorLabel(line, sessionLabel(session), "cyan", style);
 	return line;
 }
 
 export function renderDash(model: DashModel, state: ViewState, width: number, height: number, style: Style): string[] {
 	const wide = width >= 120;
 	const all = allRows(model);
-	const w = {
-		session: widths(all.filter((row) => row.kind === "session"), model.now, wide, wide ? SESSION_CAPS.wide : SESSION_CAPS.narrow),
-		job: widths(all.filter(isJobRow), model.now, wide, wide ? JOB_CAPS.wide : JOB_CAPS.narrow),
-	};
+	const w = widths(all, model.now, wide, wide ? CAPS.wide : CAPS.narrow);
 	const shown = filterModel(model, state.filter);
 	const body: string[] = [];
 	let selectedLine = -1;
 	for (const section of shown.sections) {
+		if (section.rows.length === 0) continue;
 		const count = section.rows.filter((row) => row.kind !== "session" || row.depth === 0).length;
 		body.push(style.bold(truncate(`${section.title} (${count})`, width)));
 		for (const row of section.rows) {
@@ -114,6 +120,7 @@ export function renderDash(model: DashModel, state: ViewState, width: number, he
 			}
 		}
 	}
+	if (body.length === 0) body.push(style.dim(truncate(state.filter ? `  No rows match /${state.filter}` : "  Nothing to show", width)));
 	const bodyHeight = Math.max(1, height - 3);
 	const offset = selectedLine >= bodyHeight ? selectedLine - bodyHeight + 1 : 0;
 	const title = state.filter || state.editing ? `Work dashboard  /${state.filter}${state.editing ? "_" : ""}` : "Work dashboard";
