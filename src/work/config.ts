@@ -8,7 +8,7 @@ export type JiraConfig = { site: string; email: string; secretCommand: string[];
 export type GithubAccount = { user: string; orgs: string[] };
 export type ProjectConfig = { slug: string; title: string; jiraEpic?: string; notesPath?: string };
 export type Rule = { project: string; repo?: string; jiraEpic?: string; jiraProject?: string };
-export type WorkConfig = { jira?: JiraConfig; github: { accounts: GithubAccount[] }; projects: ProjectConfig[]; rules: Rule[]; plannerCwd?: string; usage?: boolean; children?: ChildrenConfig };
+export type WorkConfig = { jira?: JiraConfig; github: { accounts: GithubAccount[] }; projects: ProjectConfig[]; rules: Rule[]; plannerCwd?: string; usage?: boolean; children?: ChildrenConfig; bashTimeoutMinutes?: number };
 export type LoadedConfig = { config: WorkConfig; warnings: string[] };
 export type RepoChildrenConfig = { ignore: string[]; expensiveCommands: string[] };
 export type DiffBudgetConfig = { defaultLines: number; defaultFiles: number; maxLines: number; prLines: number };
@@ -22,13 +22,20 @@ export type ChildrenConfig = {
 };
 
 export const DEFAULT_CHILDREN: ChildrenConfig = {
-	defaultModel: "anthropic/claude-sonnet-5",
+	defaultModel: "ai-gw-openai/openai/gpt-5.6-sol",
 	diffBudget: { defaultLines: 300, defaultFiles: 8, maxLines: 800, prLines: 2000 },
 	spendCapUsd: 5,
 	commandTimeoutMinutes: 10,
 	warnPercent: 80,
 	repos: {},
 };
+
+export const DEFAULT_BASH_TIMEOUT_MINUTES = 30;
+
+// The timeout the tool_call hook gives a bash call that sets none (child runs keep their stricter commandTimeoutMinutes).
+export function bashTimeoutMinutes(config: WorkConfig): number {
+	return config.bashTimeoutMinutes ?? DEFAULT_BASH_TIMEOUT_MINUTES;
+}
 
 export function childrenConfig(config: WorkConfig): ChildrenConfig {
 	return config.children ?? DEFAULT_CHILDREN;
@@ -226,6 +233,11 @@ export function parseWorkConfig(raw: string): LoadedConfig {
 	if (data.usage !== undefined) {
 		if (typeof data.usage === "boolean") config.usage = data.usage;
 		else warnings.push("usage must be true or false; usage tracking stays on");
+	}
+	if (data.bashTimeoutMinutes !== undefined) {
+		const minutes = data.bashTimeoutMinutes;
+		if (typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0) config.bashTimeoutMinutes = minutes;
+		else warnings.push(`bashTimeoutMinutes must be a positive number; using ${DEFAULT_BASH_TIMEOUT_MINUTES}`);
 	}
 	if (data.children !== undefined) config.children = parseChildren(data.children, warnings);
 	return { config, warnings };

@@ -53,3 +53,12 @@ test('default paths follow XDG variables', () => {
   assert.equal(expandHome('~/notes', '/h'), '/h/notes');
   assert.equal(expandHome('~', '/h'), '/h');
 });
+
+test('bashTimeoutMinutes defaults to 30 and must be a positive number', async () => {
+  const { parseWorkConfig, bashTimeoutMinutes } = await load('src/work/config.ts');
+  assert.equal(bashTimeoutMinutes(parseWorkConfig('{}').config), 30);
+  assert.equal(bashTimeoutMinutes(parseWorkConfig('{"bashTimeoutMinutes": 45}').config), 45);
+  const bad = parseWorkConfig('{"bashTimeoutMinutes": -3}');
+  assert.equal(bashTimeoutMinutes(bad.config), 30);
+  assert.deepEqual(bad.warnings, ['bashTimeoutMinutes must be a positive number; using 30']);
+});

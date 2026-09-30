@@ -29,7 +29,7 @@ export type ChildGuard = {
 };
 
 const EDIT_TOOLS: readonly string[] = ["edit", "write"];
-const OVER_BUDGET = "Blocked: the diff budget is used up. Commit what you have with git add and git commit, then end with session_status.";
+const OVER_BUDGET = "Blocked: the diff budget is exceeded. Commit what you have with git add and git commit, then end with session_status.";
 const OVER_SPEND = "Blocked: the spending cap is reached, and this run is stopping.";
 const NO_GIT = "Blocked: git is unavailable here, so the diff budget cannot be measured and edits are off. End with session_status.";
 const READ_ONLY = "Blocked: this is a read-only run. Report what you found in your final message instead.";
@@ -107,9 +107,10 @@ export function createChildGuard(deps: ChildGuardDeps): ChildGuard {
 		}
 		const lines = run.budgetLines ?? Number.POSITIVE_INFINITY;
 		const files = run.budgetFiles ?? Number.POSITIVE_INFINITY;
-		if (stats.lines >= lines || stats.files >= files) {
+		// Reaching a limit exactly is fine; only going past it blocks.
+		if (stats.lines > lines || stats.files > files) {
 			flag("over-budget");
-			return `Budget reached (${stats.lines}/${lines} lines, ${stats.files}/${files} files). Edits are blocked. Commit what you have with git add and git commit, then end with session_status.`;
+			return `Budget exceeded (${stats.lines}/${lines} lines, ${stats.files}/${files} files). Edits are blocked. Commit what you have with git add and git commit, then end with session_status.`;
 		}
 		const warnAt = config.warnPercent / 100;
 		if (stats.lines >= lines * warnAt) return `Budget ${stats.lines}/${lines} lines: finish the smallest working change.`;

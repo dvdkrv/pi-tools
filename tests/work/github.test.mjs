@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { load } from './helpers.mjs';
+import { chmodSync, writeFileSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
+import { load, tempDir } from './helpers.mjs';
 
-const { fetchGithub, checksSummary, parsePrKey, prKey, classifyGhError } = await load('src/work/connectors/github.ts');
+const { fetchGithub, checksSummary, parsePrKey, prKey, classifyGhError, defaultGhRunner, ghEnv } = await load('src/work/connectors/github.ts');
 
 const accounts = [{ user: 'work-account', orgs: ['example-org'] }];
 const view = (number, extra = {}) => ({
@@ -84,4 +86,23 @@ test('helpers: checks summary, PR keys, error classification', () => {
   assert.equal(classifyGhError('HTTP 401: Bad credentials'), 'auth-failed');
   assert.equal(classifyGhError('dial tcp: connection refused'), 'unreachable');
   assert.equal(classifyGhError('something else'), 'error');
+});
+
+test('every gh call runs with D-Bus disabled, so gh auth token cannot autolaunch a dbus-daemon', async () => {
+  assert.equal(ghEnv({ GH_TOKEN: 't', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/x' }, { PATH: '/bin', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/y' }).DBUS_SESSION_BUS_ADDRESS, 'disabled:');
+  const bin = tempDir();
+  const gh = join(bin, 'gh');
+  writeFileSync(gh, '#!/bin/sh\nprintf "%s %s" "$DBUS_SESSION_BUS_ADDRESS" "$GH_TOKEN"\n');
+  chmodSync(gh, 0o755);
+  const saved = { PATH: process.env.PATH, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS };
+  process.env.PATH = `${bin}${delimiter}${saved.PATH}`;
+  process.env.DBUS_SESSION_BUS_ADDRESS = 'unix:path=/run/user/1/bus';
+  try {
+    assert.equal(await defaultGhRunner(['auth', 'token']), 'disabled: ');
+    assert.equal(await defaultGhRunner(['pr', 'list'], { GH_TOKEN: 'tok' }), 'disabled: tok');
+  } finally {
+    process.env.PATH = saved.PATH;
+    if (saved.DBUS_SESSION_BUS_ADDRESS === undefined) delete process.env.DBUS_SESSION_BUS_ADDRESS;
+    else process.env.DBUS_SESSION_BUS_ADDRESS = saved.DBUS_SESSION_BUS_ADDRESS;
+  }
 });

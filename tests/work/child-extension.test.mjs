@@ -94,7 +94,12 @@ test('an unknown child run fails closed and still starts the watchdog', async ()
 test('sessions that are not children register no guard hooks', async () => {
   const rt = await memoryRuntime();
   const s = setup({ runtime: rt, env: {}, cwd: '/src/api' });
-  for (const name of ['tool_call', 'tool_result']) assert.equal(s.events.has(name), false, name);
+  assert.equal(s.events.has('tool_result'), false);
+  // tool_call only sets the default bash timeout here; it blocks nothing.
+  const input = { command: 'npm test' };
+  assert.equal(await s.emit('tool_call', { toolName: 'bash', input }), undefined);
+  assert.equal(input.timeout, 1800);
+  assert.equal(await s.emit('tool_call', { toolName: 'edit', input: { path: '/etc/passwd' } }), undefined);
   // message_end is shared with session_status's visible-text check, but never records child spend here.
   await s.emit('message_end', { message: { role: 'assistant', content: [], usage: { cost: { total: 0.4 } } } });
   assert.equal(rt.store.listChildRuns().length, 0);

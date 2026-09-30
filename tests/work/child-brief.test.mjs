@@ -8,7 +8,7 @@ const { DEFAULT_CHILDREN } = await load('src/work/config.ts');
 test('an implement brief takes the default model and budget, and caps requested lines', () => {
   const r = resolveBrief({ goal: ' Add retry to fetchJira ', kind: 'implement', scope: ['src/**', ' '], acceptance: ['node --test tests/a.test.mjs'] }, DEFAULT_CHILDREN, 'api');
   assert.deepEqual(r.brief, { goal: 'Add retry to fetchJira', kind: 'implement', scope: ['src/**'], nonGoals: [], acceptance: ['node --test tests/a.test.mjs'], context: '', model: null, modelReason: null, from: null });
-  assert.deepEqual([r.model, r.budgetLines, r.budgetFiles, r.notes], ['anthropic/claude-sonnet-5', 300, 8, []]);
+  assert.deepEqual([r.model, r.budgetLines, r.budgetFiles, r.notes], ['ai-gw-openai/openai/gpt-5.6-sol', 300, 8, []]);
   const capped = resolveBrief({ goal: 'x', kind: 'implement', scope: ['src/**'], acceptance: ['true'], budget: { lines: 5000, files: 3 }, model: 'openai/gpt-5.6', model_reason: 'needs a long context' }, DEFAULT_CHILDREN, 'api');
   assert.deepEqual([capped.budgetLines, capped.budgetFiles, capped.model, capped.notes], [800, 3, 'openai/gpt-5.6', ['Budget capped at 800 lines.']]);
   assert.equal(capped.brief.modelReason, 'needs a long context');

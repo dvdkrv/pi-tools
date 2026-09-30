@@ -11,7 +11,7 @@ test('without a children section, the defaults apply and nothing warns', () => {
   assert.deepEqual(warnings, []);
   assert.equal(config.children, undefined);
   assert.deepEqual(childrenConfig(config), {
-    defaultModel: 'anthropic/claude-sonnet-5',
+    defaultModel: 'ai-gw-openai/openai/gpt-5.6-sol',
     diffBudget: { defaultLines: 300, defaultFiles: 8, maxLines: 800, prLines: 2000 },
     spendCapUsd: 5,
     commandTimeoutMinutes: 10,
@@ -48,7 +48,7 @@ test('invalid values fall back to the defaults field by field, each with a warni
     repos: { api: { ignore: ['ok/**', 7], expensiveCommands: ['(unclosed', 'make check$'] }, web: 'nope' },
   });
   const c = childrenConfig(config);
-  assert.equal(c.defaultModel, 'anthropic/claude-sonnet-5');
+  assert.equal(c.defaultModel, 'ai-gw-openai/openai/gpt-5.6-sol');
   assert.deepEqual(c.diffBudget, { defaultLines: 300, defaultFiles: 8, maxLines: 800, prLines: 2000 });
   assert.deepEqual([c.spendCapUsd, c.commandTimeoutMinutes, c.warnPercent], [5, 5, 80]);
   assert.deepEqual(c.repos.api, { ignore: ['ok/**'], expensiveCommands: ['make check$'] });

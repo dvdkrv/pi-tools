@@ -46,7 +46,7 @@ test('delegate starts an implement child in its own worktree and reports one don
   assert.equal(result.ok, true);
   assert.deepEqual([result.run.id, result.run.branch, result.run.baseCommit], ['C-1', 'child/feat/x/C-1', head]);
   assert.equal(result.run.worktree, join(l.repo, '.pi', 'worktrees', 'child-C-1'));
-  assert.match(result.message, /^Started C-1 on child\/feat\/x\/C-1 with anthropic\/claude-sonnet-5\. Its result arrives as a message/);
+  assert.match(result.message, /^Started C-1 on child\/feat\/x\/C-1 with ai-gw-openai\/openai\/gpt-5\.6-sol\. Its result arrives as a message/);
   assert.equal(git(l.repo, 'status', '--porcelain'), '');
 
   await until(() => l.messages.length === 1);
@@ -55,14 +55,14 @@ test('delegate starts an implement child in its own worktree and reports one don
   assert.deepEqual(run.acceptance, [{ command: 'test -f src/retry.ts', exitCode: 0, summary: '' }]);
   assert.match(l.messages[0], /^Child C-1 finished: done\nGoal: Add retry to fetchJira\nSummary: Added retry\nDiff: 1\/300 lines, 1\/8 files\nAcceptance: pass `test -f src\/retry\.ts` \(exit 0\)\nSpend: \$0\.00 of \$5\.00\nBranch: child\/feat\/x\/C-1 \(base [0-9a-f]{12}\)\nNext: review the diff/);
   assert.match(l.messages[0], /call merge_child C-1/);
-  assert.equal(l.supervisor.list('lead-1'), 'C-1  done  sonnet-5  $0.00  1/300 lines 1/8 files  acceptance 1/1  goal: Add retry to fetchJira  note: Added retry');
+  assert.equal(l.supervisor.list('lead-1'), 'C-1  done  gpt-5.6-sol  $0.00  1/300 lines 1/8 files  acceptance 1/1  goal: Add retry to fetchJira  note: Added retry');
 
   const entries = await until(() => {
     const logged = readJsonl(l.log);
     return logged.some((entry) => entry.stdin === 'closed' || entry.signal === 'SIGTERM') && logged;
   });
   const [start] = entries;
-  assert.deepEqual(start.argv.slice(0, 7), ['--mode', 'rpc', '--model', 'anthropic/claude-sonnet-5', '--name', 'child C-1: Add retry to fetchJira', '--append-system-prompt']);
+  assert.deepEqual(start.argv.slice(0, 7), ['--mode', 'rpc', '--model', 'ai-gw-openai/openai/gpt-5.6-sol', '--name', 'child C-1: Add retry to fetchJira', '--append-system-prompt']);
   assert.match(start.argv[7], /Scope \(the only paths you may change\): src\/\*\*/);
   assert.equal(start.argv.length, 8);
   assert.equal(start.cwd, run.worktree);
@@ -120,7 +120,7 @@ test('a child that cannot start fails the run and removes its worktree and branc
 test('a read-only child runs in the lead directory without edit and write, and is done when it declares done', async () => {
   const l = await lead({ note: 'Auth goes through src/auth.ts' });
   const result = l.supervisor.delegate('lead-1', l.repo, { goal: 'Map the auth flow', kind: 'read-only' });
-  assert.match(result.message, /^Started C-1 \(read-only, in your working directory\) with anthropic\/claude-sonnet-5\./);
+  assert.match(result.message, /^Started C-1 \(read-only, in your working directory\) with ai-gw-openai\/openai\/gpt-5\.6-sol\./);
   await until(() => l.messages.length === 1);
   assert.equal(l.store.getChildRun('C-1').outcome, 'done');
   assert.doesNotMatch(l.messages[0], /Diff:/);

@@ -29,6 +29,9 @@ export function formatChildRun(run: ChildRun, note: string): string {
 }
 
 function nextStep(run: ChildRun): string {
+	// A result can arrive after the lead has already discarded or merged the run; then nothing is left to do.
+	if (run.outcome === "discarded") return "It was already discarded, so there is nothing left to do.";
+	if (run.outcome === "merged") return "It was already merged, so there is nothing left to do.";
 	if (run.kind === "read-only") return "Next: use the findings, or delegate follow-up work.";
 	const passed = run.acceptance.length > 0 && run.acceptance.every((result) => result.exitCode === 0);
 	if (run.outcome === "done" && passed) {
@@ -49,7 +52,7 @@ export function renderResult(run: ChildRun, config: ChildrenConfig): string {
 		lines.push(`Acceptance: ${verdict} \`${result.command}\` (${code}) ${result.summary}`.trimEnd());
 	}
 	lines.push(`Spend: ${money(run.spendUsd)} of ${money(config.spendCapUsd)}`);
-	if (run.branch) lines.push(`Branch: ${run.branch} (base ${short(run.baseCommit)})`);
+	if (run.branch && run.outcome !== "discarded") lines.push(`Branch: ${run.branch} (base ${short(run.baseCommit)})`);
 	lines.push(nextStep(run));
 	return lines.join("\n");
 }

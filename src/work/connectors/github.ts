@@ -21,9 +21,17 @@ export function classifyGhError(text: string, code?: unknown): ConnectorStatus {
 	return "error";
 }
 
+// With a D-Bus session address, `gh auth token` asks the keyring over D-Bus, which can autolaunch a
+// dbus-daemon that never exits. Every gh call pi-tools makes turns that off.
+export const GH_ENV: Readonly<Record<string, string>> = { DBUS_SESSION_BUS_ADDRESS: "disabled:" };
+
+export function ghEnv(env: Record<string, string> = {}, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	return { ...base, ...env, ...GH_ENV };
+}
+
 export const defaultGhRunner: GhRunner = (args, env = {}) =>
 	new Promise((resolve, reject) => {
-		execFile("gh", args, { encoding: "utf8", env: { ...process.env, ...env }, maxBuffer: 16 * 1024 * 1024, timeout: 60_000 }, (error, stdout, stderr) => {
+		execFile("gh", args, { encoding: "utf8", env: ghEnv(env), maxBuffer: 16 * 1024 * 1024, timeout: 60_000 }, (error, stdout, stderr) => {
 			if (!error) {
 				resolve(stdout);
 				return;

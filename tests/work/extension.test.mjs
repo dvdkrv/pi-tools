@@ -106,3 +106,21 @@ test('/dash opens the dashboard in a tmux popup, and warns outside tmux', async 
   assert.match(dashCommand('/opt/pi/bin/pi'), /^'node' '.*bin\/work\.ts' dash$/);
   assert.match(dashCommand('/usr/local/bin/node'), /^'\/usr\/local\/bin\/node' /);
 });
+
+test('a bash call without a timeout gets the bashTimeoutMinutes default; one with a timeout keeps it', async () => {
+  const rt = await memoryRuntime({ config: { ...paymentsConfig, bashTimeoutMinutes: 2 } });
+  const { events } = setup(rt);
+  const bare = { command: 'sleep 1000' };
+  assert.equal(await events.get('tool_call')({ toolName: 'bash', input: bare }, context().ctx), undefined);
+  assert.equal(bare.timeout, 120);
+  const own = { command: 'make', timeout: 7200 };
+  await events.get('tool_call')({ toolName: 'bash', input: own }, context().ctx);
+  assert.equal(own.timeout, 7200);
+  const read = { path: 'x' };
+  await events.get('tool_call')({ toolName: 'read', input: read }, context().ctx);
+  assert.equal(read.timeout, undefined);
+  const defaults = setup(await memoryRuntime({ config: paymentsConfig }));
+  const input = { command: 'ls', timeout: 0 };
+  await defaults.events.get('tool_call')({ toolName: 'bash', input }, context().ctx);
+  assert.equal(input.timeout, 1800);
+});

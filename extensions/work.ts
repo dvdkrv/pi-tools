@@ -14,7 +14,7 @@ import { mergeChild } from "../src/work/children/merge.ts";
 import type { SupervisorDeps } from "../src/work/children/supervisor.ts";
 import { createSupervisor } from "../src/work/children/supervisor.ts";
 import { startWatchdog } from "../src/work/children/watchdog.ts";
-import { childrenConfig, expandHome } from "../src/work/config.ts";
+import { bashTimeoutMinutes, childrenConfig, DEFAULT_BASH_TIMEOUT_MINUTES, expandHome } from "../src/work/config.ts";
 import type { GhRunner } from "../src/work/connectors/github.ts";
 import { registerAgentJob } from "../src/work/jobs.ts";
 import type { TmuxRunner } from "../src/work/planner.ts";
@@ -136,6 +136,23 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		};
 		if (childRunId) {
 			pi.on("tool_call", async (event) => guard?.toolCall(event.toolName, event.input as Record<string, unknown>));
+		} else {
+			// Every other session gets a default bash timeout, so a hung command cannot hold the session forever.
+			pi.on("tool_call", async (event) => {
+				if (event.toolName !== "bash") return undefined;
+				const input = event.input as Record<string, unknown>;
+				if (typeof input.timeout === "number" && input.timeout > 0) return undefined;
+				let minutes = DEFAULT_BASH_TIMEOUT_MINUTES;
+				try {
+					minutes = bashTimeoutMinutes(rt().config);
+				} catch {
+					// Without the registry the default still applies.
+				}
+				input.timeout = Math.max(1, Math.round(minutes * 60));
+				return undefined;
+			});
+		}
+		if (childRunId) {
 			pi.on("tool_result", async (event) => {
 				const warning = guard?.toolResult(event.toolName);
 				return warning ? { content: [...event.content, { type: "text" as const, text: warning }] } : undefined;

@@ -81,7 +81,7 @@ test('delegate, children, stop_child, and merge_child work end to end with a fak
   await until(() => s.sent.length === 1);
   assert.match(s.sent[0].message.content, /^Child C-1 finished: done/);
   assert.deepEqual(s.sent[0].options, { deliverAs: 'followUp', triggerTurn: true });
-  assert.match((await s.run('children', {})).content[0].text, /^C-1  done  sonnet-5  \$0\.00  read-only  goal: Map the auth flow  note: Found it$/);
+  assert.match((await s.run('children', {})).content[0].text, /^C-1  done  gpt-5.6-sol  \$0\.00  read-only  goal: Map the auth flow  note: Found it$/);
   assert.equal((await s.run('merge_child', { id: 'C-1' })).content[0].text, 'Refused: C-1 is not one of your implement runs.');
   assert.equal((await s.run('stop_child', { id: 'C-1', discard: true })).content[0].text, 'Discarded C-1.');
   assert.match((await s.run('steer_child', { id: 'C-1', text: 'hi' })).content[0].text, /can no longer be steered/);

@@ -52,17 +52,21 @@ test('shell commands are checked for restricted actions and full test runs, and 
   assert.equal(none.timeout, 120);
 });
 
-test('the diff budget warns at the threshold, then blocks edits and limits the shell', () => {
+test('the diff budget warns at the threshold, allows reaching the limit, then blocks edits and limits the shell past it', () => {
   const { guard, dir, records } = guarded({ run: { budgetLines: 10, budgetFiles: 8 } });
   writeFiles(dir, { 'src/b.ts': '1\n2\n3\n4\n5\n6\n7\n' });
   assert.equal(guard.toolResult('write'), undefined);
   writeFiles(dir, { 'src/c.ts': '1\n' });
   assert.equal(guard.toolResult('write'), 'Budget 8/10 lines: finish the smallest working change.');
   writeFiles(dir, { 'src/d.ts': '1\n2\n' });
-  assert.match(guard.toolResult('bash'), /^Budget reached \(10\/10 lines, 3\/8 files\)\. Edits are blocked\. Commit what you have/);
-  assert.deepEqual(merged(records), { diffLines: 10, diffFiles: 3, flags: ['over-budget'] });
+  assert.equal(guard.toolResult('bash'), 'Budget 10/10 lines: finish the smallest working change.');
+  assert.deepEqual(guard.flags, []);
+  assert.equal(guard.toolCall('edit', { path: 'src/a.ts' }), undefined);
+  writeFiles(dir, { 'src/d.ts': '1\n2\n3\n' });
+  assert.match(guard.toolResult('bash'), /^Budget exceeded \(11\/10 lines, 3\/8 files\)\. Edits are blocked\. Commit what you have/);
+  assert.deepEqual(merged(records), { diffLines: 11, diffFiles: 3, flags: ['over-budget'] });
   assert.deepEqual(guard.flags, ['over-budget']);
-  assert.match(guard.toolCall('edit', { path: 'src/a.ts' }).reason, /diff budget is used up/);
+  assert.match(guard.toolCall('edit', { path: 'src/a.ts' }).reason, /diff budget is exceeded/);
   assert.match(guard.toolCall('bash', { command: 'ls' }).reason, /Allowed now: git status/);
   for (const command of ['git status', 'git diff --stat', 'git add -A && git commit -m "wip; partial"', 'node --test tests/a.test.mjs']) {
     assert.equal(guard.toolCall('bash', { command }), undefined, command);
@@ -78,7 +82,10 @@ test('the file count has its own warning and limit, and ignored paths do not cou
   assert.equal(guard.toolResult('edit'), 'Budget 4/5 files: finish the smallest working change.');
   assert.deepEqual(records.at(-1), { diffLines: 4, diffFiles: 4 });
   writeFiles(dir, { 'src/5.ts': 'a\n' });
-  assert.match(guard.toolResult('edit'), /^Budget reached \(5\/300 lines, 5\/5 files\)/);
+  assert.equal(guard.toolResult('edit'), 'Budget 5/5 files: finish the smallest working change.');
+  assert.deepEqual(guard.flags, []);
+  writeFiles(dir, { 'src/6.ts': 'a\n' });
+  assert.match(guard.toolResult('edit'), /^Budget exceeded \(6\/300 lines, 6\/5 files\)/);
 });
 
 test('spend warns once at the threshold, and at the cap aborts, blocks, and commits the work', () => {
