@@ -18,7 +18,7 @@ import { CHILD_RUN_ENV, PARENT_PID_ENV } from "./child-guard.ts";
 import { formatChildRun, lastLine, renderResult } from "./format.ts";
 import { addWorktree, commitsSince, defaultBranchRef, excludeChildWorktrees, gitText, isClean, isDefaultBranch, measureDiff, removeWorktree, runGit } from "./git.ts";
 import { BUILT_IN_IGNORE } from "./guards.ts";
-import type { RpcChild } from "./rpc.ts";
+import type { RpcChild, RpcEvent } from "./rpc.ts";
 import { spawnRpcChild } from "./rpc.ts";
 
 export const KILL_GRACE_MS = 10_000;
@@ -46,8 +46,27 @@ export type Supervisor = {
 	shutdownAll(): Promise<void>;
 };
 
-type Handle = { child: RpcChild; started: boolean; stopping: boolean; finished: boolean };
+type Handle = {
+	child: RpcChild;
+	started: boolean;
+	stopping: boolean;
+	finished: boolean;
+	successfulAssistant: boolean;
+	lastAssistantError: string | null;
+	lastAssistantErrored: boolean;
+};
 type Ending = { kind: "settled" } | { kind: "exited"; detail: string } | { kind: "start-failed"; detail: string };
+
+function trackAssistant(handle: Handle, event: RpcEvent): void {
+	const message = event.message;
+	if (!message || typeof message !== "object" || Array.isArray(message) || (message as Record<string, unknown>).role !== "assistant") return;
+	const assistant = message as Record<string, unknown>;
+	const detail = typeof assistant.errorMessage === "string" && assistant.errorMessage.trim() ? assistant.errorMessage : null;
+	const errored = assistant.stopReason === "error" || detail !== null;
+	handle.lastAssistantErrored = errored;
+	if (errored) handle.lastAssistantError = detail ?? "unknown error";
+	else handle.successfulAssistant = true;
+}
 
 // Child worktrees live at <root>/.pi/worktrees/child-<id>, so the repository root is three levels up.
 function rootOf(run: ChildRun): string | undefined {
@@ -130,10 +149,11 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 		const args = ["--mode", "rpc", "--model", run.model, "--name", `child ${run.id}: ${run.brief.goal}`, "--append-system-prompt", renderChildPrompt(run, config)];
 		if (run.kind === "read-only") args.push("--exclude-tools", "edit,write");
 		const child = spawnRpcChild([...(deps.command ?? ["pi"]), ...args], { cwd: run.worktree ?? leadCwd, env });
-		const handle: Handle = { child, started: false, stopping: false, finished: false };
+		const handle: Handle = { child, started: false, stopping: false, finished: false, successfulAssistant: false, lastAssistantError: null, lastAssistantErrored: false };
 		handles.set(run.id, handle);
 		store.updateChildRun(run.id, { pid: child.pid ?? null });
 		child.onEvent((event) => {
+			if (event.type === "message_end") trackAssistant(handle, event);
 			if (event.type === "agent_settled") void finish(run.id, { kind: "settled" });
 		});
 		child.onExit((exit) => {
@@ -165,7 +185,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 				if (handle.stopping) {
 					end = { outcome: "stopped", summary: "stopped by the lead", ...diffOf(run) };
 				} else if (ending.kind === "settled") {
-					end = await settledEnd(run);
+					end = await settledEnd(run, handle);
 				} else {
 					const failedStart = ending.kind === "start-failed" || !handle.started;
 					const stderr = lastLine(handle.child.stderrTail());
@@ -183,11 +203,14 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 		}
 	}
 
-	async function settledEnd(run: ChildRun): Promise<ChildRunEnd> {
+	async function settledEnd(run: ChildRun, handle: Handle): Promise<ChildRunEnd> {
 		const session = run.childSession ? deps.store().getSession(run.childSession) : undefined;
 		const declared = session?.statusSource === "agent" ? session.status : undefined;
 		const summary = session?.note ?? "";
 		const diff = diffOf(run);
+		if (handle.lastAssistantError && (!handle.successfulAssistant || handle.lastAssistantErrored)) {
+			return { outcome: "failed", summary: `model error: ${lastLine(handle.lastAssistantError)}`, ...diff };
+		}
 		if (run.flags.includes("over-spend")) return { outcome: "over-spend", summary, ...diff };
 		if (run.flags.includes("over-budget")) return { outcome: "over-budget", summary, ...diff };
 		if (run.flags.includes("no-git")) return { outcome: "failed", summary: summary || "git was unavailable, so the diff budget could not be measured", ...diff };

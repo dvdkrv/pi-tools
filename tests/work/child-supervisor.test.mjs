@@ -106,6 +106,17 @@ test('a crash after the prompt fails the run and keeps the worktree', async () =
   assert.match(l.messages[0], /^Child C-1 finished: failed/);
 });
 
+test('a child whose first model call errors fails with the model error and keeps its worktree', async () => {
+  const l = await lead({ behavior: { onPrompt: 'model-error', errorMessage: 'request failed\n401 Unauthorized: invalid API key\n' }, declared: null });
+  l.supervisor.delegate('lead-1', l.repo, implement());
+  await until(() => l.messages.length === 1);
+  const run = l.store.getChildRun('C-1');
+  assert.equal(run.outcome, 'failed');
+  assert.equal(run.summary, 'model error: 401 Unauthorized: invalid API key');
+  assert.equal(existsSync(run.worktree), true);
+  assert.match(l.messages[0], /^Child C-1 finished: failed[\s\S]*401 Unauthorized: invalid API key/);
+});
+
 test('a child that cannot start fails the run and removes its worktree and branch', async () => {
   const l = await lead({ command: ['/nonexistent/pi'] });
   const { run } = l.supervisor.delegate('lead-1', l.repo, implement());
