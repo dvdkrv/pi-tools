@@ -4,6 +4,8 @@ import { load, memoryStore } from './helpers.mjs';
 
 const { buildDashModel, loadSessions } = await load('src/work/dash/model.ts');
 const { renderDash, hintsFor } = await load('src/work/dash/view.ts');
+const { formatChildRun, renderResult } = await load('src/work/children/format.ts');
+const { DEFAULT_CHILDREN } = await load('src/work/config.ts');
 const { plainStyle, ansiStyle } = await load('src/work/dash/text.ts');
 
 const NOW = new Date('2026-09-25T09:00:00.000Z');
@@ -229,16 +231,20 @@ test('hints follow the selected row', () => {
   assert.equal(hintsFor(sessionRows.find((r) => r.key === 'triage')), hints('enter triage'));
 });
 
-test('a child row with a run shows its ID, model, spend, and diff against budget', () => {
-  const run = { id: 'C-4', model: 'anthropic/claude-sonnet-5', spendUsd: 1.2, diffLines: 212, budgetLines: 300, outcome: 'running', brief: { goal: 'Add retry to fetchJira' } };
+test('child displays show their model, spend or dash, and diff against budget', () => {
+  const run = {
+    id: 'C-4', leadSession: 'p', childSession: 'c', kind: 'implement', model: 'provider/unknown', spendUsd: null,
+    diffLines: 212, diffFiles: 2, budgetLines: 300, budgetFiles: 8, outcome: 'running', flags: ['unpriced'], acceptance: [], summary: '',
+    brief: { goal: 'Add retry to fetchJira', acceptance: [] }, branch: null, baseCommit: null,
+  };
   const sessions = [
     entry({ id: 'p', tmuxWindow: 'api', status: 'working' }),
     entry({ id: 'c', parentSession: 'p', headless: true, tmuxPane: null, status: 'done', run }),
-    entry({ id: 'd', parentSession: 'p', headless: true, tmuxPane: null, status: 'done', run: { ...run, id: 'C-5', outcome: 'merged', budgetLines: null } }),
   ];
   const lines = plain(renderDash(buildDashModel({ sessions, triageCount: 0, now: NOW }), state({ selected: null }), 100, 20, plainStyle));
-  assert.ok(lines.some((line) => /^ {2}done {9}C-4\s+-\s+\S+\s+sonnet-5 \$1\.20 212\/300 "Add retry to fetchJira"$/.test(line)), lines.join('\n'));
-  assert.ok(lines.some((line) => /^ {2}done {9}C-5\s+-\s+\S+\s+merged sonnet-5 \$1\.20 read-only "Add retry to fetchJira"$/.test(line)), lines.join('\n'));
+  assert.ok(lines.some((line) => /^ {2}done {9}C-4\s+-\s+\S+\s+unknown — 212\/300 "Add retry to fetchJira"$/.test(line)), lines.join('\n'));
+  assert.match(formatChildRun(run, ''), /^C-4  running  unknown  —  /);
+  assert.match(renderResult(run, DEFAULT_CHILDREN), /Spend: — of \$5\.00 \(no price for provider\/unknown in children\.pricing; the cap is not enforced\)/);
 });
 
 test('loadSessions attaches each child session its run', async () => {

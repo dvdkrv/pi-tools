@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
+import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { captureItem } from "../src/work/capture.ts";
@@ -353,13 +354,13 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			tracker.agentStart();
 		});
 		pi.on("message_end", async (event) => {
-			const message = event.message as unknown as { role?: string; content?: unknown; usage?: { cost?: { total?: number } } };
+			const message = event.message as unknown as { role?: string; content?: unknown; usage?: Usage };
 			if (message.role !== "assistant") return;
 			if (Array.isArray(message.content) && message.content.some((part) => {
 				const block = part as { type?: string; text?: string };
 				return block.type === "text" && typeof block.text === "string" && block.text.trim().length > 0;
 			})) visibleTextThisRun = true;
-			if (childRunId) guard?.assistantCost(message.usage?.cost?.total ?? 0);
+			if (childRunId && message.usage) guard?.assistantCost(message.usage);
 		});
 		pi.on("agent_end", async (event) => {
 			tracker.agentEnd(event.messages);

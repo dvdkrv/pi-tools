@@ -18,6 +18,7 @@ import { CHILD_RUN_ENV, PARENT_PID_ENV } from "./child-guard.ts";
 import { formatChildRun, lastLine, renderResult } from "./format.ts";
 import { addWorktree, commitsSince, defaultBranchRef, excludeChildWorktrees, gitText, isClean, isDefaultBranch, measureDiff, removeWorktree, runGit } from "./git.ts";
 import { BUILT_IN_IGNORE } from "./guards.ts";
+import { priceFor } from "./pricing.ts";
 import type { RpcChild } from "./rpc.ts";
 import { spawnRpcChild } from "./rpc.ts";
 
@@ -131,10 +132,20 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 		if (run.kind === "read-only") args.push("--exclude-tools", "edit,write");
 		const child = spawnRpcChild([...(deps.command ?? ["pi"]), ...args], { cwd: run.worktree ?? leadCwd, env });
 		const handle: Handle = { child, started: false, stopping: false, finished: false };
+		let unpricedNotified = false;
 		handles.set(run.id, handle);
 		store.updateChildRun(run.id, { pid: child.pid ?? null });
 		child.onEvent((event) => {
 			if (event.type === "agent_settled") void finish(run.id, { kind: "settled" });
+			if (event.type === "message_end" && !unpricedNotified && !priceFor(config.pricing, run.model)) {
+				const message = event.message as { role?: unknown; usage?: { input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown; cost?: { total?: unknown } } } | undefined;
+				const usage = message?.usage;
+				const tokens = usage && [usage.input, usage.output, usage.cacheRead, usage.cacheWrite].some((value) => typeof value === "number" && value > 0);
+				if (message?.role === "assistant" && usage?.cost?.total === 0 && tokens) {
+					unpricedNotified = true;
+					deps.notify(`Child ${run.id}: no price for ${run.model} in children.pricing, so its spend is unknown and the $${config.spendCapUsd.toFixed(2)} cap cannot be enforced. Add the model to children.pricing to enforce it.`);
+				}
+			}
 		});
 		child.onExit((exit) => {
 			void finish(run.id, { kind: "exited", detail: exit.signal ?? `code ${exit.code}` });

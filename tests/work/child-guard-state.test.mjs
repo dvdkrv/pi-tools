@@ -24,6 +24,10 @@ function guarded({ run = {}, config = DEFAULT_CHILDREN, cwd } = {}) {
   return { guard, dir, records, aborts };
 }
 const merged = (records) => Object.assign({}, ...records);
+const usage = ({ total = 0, input = 0, output = 0, cacheRead = 0, cacheWrite = 0 } = {}) => ({
+  input, output, cacheRead, cacheWrite, totalTokens: input + output + cacheRead + cacheWrite,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total },
+});
 
 test('edits are allowed only inside the worktree and the scope', () => {
   const { guard, dir } = guarded();
@@ -88,16 +92,16 @@ test('the file count has its own warning and limit, and ignored paths do not cou
   assert.match(guard.toolResult('edit'), /^Budget exceeded \(6\/300 lines, 6\/5 files\)/);
 });
 
-test('spend warns once at the threshold, and at the cap aborts, blocks, and commits the work', () => {
-  const { guard, dir, records, aborts } = guarded();
-  guard.assistantCost(3);
+test('computed spend warns once at the threshold, and at the cap aborts, blocks, and commits the work', () => {
+  const { guard, dir, records, aborts } = guarded({ run: { model: DEFAULT_CHILDREN.defaultModel } });
+  guard.assistantCost(usage({ input: 750_000 }));
   assert.equal(guard.toolResult('read'), undefined);
-  guard.assistantCost(1.5);
+  guard.assistantCost(usage({ input: 375_000 }));
   assert.equal(guard.toolResult('read'), 'Spend $4.50 of $5.00: finish the smallest working change.');
   assert.equal(guard.toolResult('read'), undefined);
   writeFiles(dir, { 'src/b.ts': 'partial\n' });
-  guard.assistantCost(1);
-  guard.assistantCost(1);
+  guard.assistantCost(usage({ input: 250_000 }));
+  guard.assistantCost(usage({ input: 250_000 }));
   assert.equal(aborts.length, 1);
   assert.deepEqual(guard.flags, ['over-spend']);
   assert.deepEqual(records.filter((r) => 'spendUsd' in r).map((r) => r.spendUsd), [3, 4.5, 5.5, 6.5]);
@@ -107,6 +111,17 @@ test('spend warns once at the threshold, and at the cap aborts, blocks, and comm
   assert.equal(git(dir, 'log', '-1', '--format=%s'), 'WIP: C-1 stopped at the spend cap');
   assert.equal(git(dir, 'rev-list', '--count', 'HEAD'), '2');
   assert.equal(git(dir, 'status', '--porcelain'), '');
+});
+
+test('an unpriced run marks spend unknown and never warns, aborts, or enforces the cap', () => {
+  const { guard, records, aborts } = guarded({ run: { model: 'provider/unknown' } });
+  guard.assistantCost(usage({ input: 10_000_000, output: 10_000_000 }));
+  guard.assistantCost(usage({ total: 2 }));
+  assert.deepEqual(guard.flags, ['unpriced']);
+  assert.equal(records.some((record) => 'spendUsd' in record), false);
+  assert.equal(guard.toolResult('read'), undefined);
+  assert.deepEqual(aborts, []);
+  assert.equal(guard.toolCall('bash', { command: 'ls' }), undefined);
 });
 
 test('a read-only run blocks edits and flags shell commands that change the lead directory', () => {

@@ -18,6 +18,7 @@ export type ChildrenConfig = {
 	spendCapUsd: number;
 	commandTimeoutMinutes: number;
 	warnPercent: number;
+	pricing: Record<string, { input: number; output: number }>;
 	repos: Record<string, RepoChildrenConfig>;
 };
 
@@ -27,6 +28,12 @@ export const DEFAULT_CHILDREN: ChildrenConfig = {
 	spendCapUsd: 5,
 	commandTimeoutMinutes: 10,
 	warnPercent: 80,
+	pricing: {
+		"ai-gw-openai/openai/gpt-5.6-sol": { input: 4, output: 20 },
+		"ai-gw-openai/openai/gpt-5.5": { input: 5, output: 30 },
+		"ai-gw-openai/openai/gpt-6-astra": { input: 10, output: 50 },
+		"ai-gw-anthropic-*/anthropic/claude-opus-5": { input: 5, output: 25 },
+	},
 	repos: {},
 };
 
@@ -152,6 +159,15 @@ export function parseChildren(value: unknown, warnings: string[]): ChildrenConfi
 		warnings.push(`children.warnPercent must be at most 100; using ${d.warnPercent}`);
 		warnPercent = d.warnPercent;
 	}
+	if (value.pricing !== undefined && !isRecord(value.pricing)) warnings.push("children.pricing must be an object keyed by model; invalid entries skipped");
+	const pricing: ChildrenConfig["pricing"] = { ...d.pricing };
+	for (const [model, entry] of Object.entries(isRecord(value.pricing) ? value.pricing : {})) {
+		const input = isRecord(entry) ? entry.input : undefined;
+		const output = isRecord(entry) ? entry.output : undefined;
+		if (model.trim() && typeof input === "number" && Number.isFinite(input) && input > 0 && typeof output === "number" && Number.isFinite(output) && output > 0) {
+			pricing[model] = { input, output };
+		} else warnings.push(`children.pricing.${model} needs positive input and output prices; skipped`);
+	}
 	if (value.repos !== undefined && !isRecord(value.repos)) warnings.push("children.repos must be an object keyed by repository; ignored");
 	const repos: Record<string, RepoChildrenConfig> = {};
 	for (const [name, entry] of Object.entries(isRecord(value.repos) ? value.repos : {})) {
@@ -168,6 +184,7 @@ export function parseChildren(value: unknown, warnings: string[]): ChildrenConfi
 		spendCapUsd: positiveNumber(value, "spendCapUsd", d.spendCapUsd, "children", warnings, false),
 		commandTimeoutMinutes: positiveNumber(value, "commandTimeoutMinutes", d.commandTimeoutMinutes, "children", warnings, false),
 		warnPercent,
+		pricing,
 		repos,
 	};
 }
