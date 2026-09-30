@@ -17,6 +17,8 @@ import { candidateLabel, candidateSummary, openCandidates } from "../triage.ts";
 import type { Candidate, Item, Job } from "../types.ts";
 import { OPEN_ITEM_STATUSES } from "../types.ts";
 import { recordUsage } from "../usage.ts";
+import type { HostSample, HostSnapshot } from "./host.ts";
+import { collectHost } from "./host.ts";
 import type { DashModel, DashRow, SessionEntry } from "./model.ts";
 import { allRows, buildDashModel, loadSessions } from "./model.ts";
 import type { Terminal } from "./terminal.ts";
@@ -40,6 +42,8 @@ export type DashDeps = {
 	pi?: string;
 	kill?: (pid: number, signal: NodeJS.Signals) => void;
 	jobs?: JobDeps;
+	// undefined collects host metrics with collectHost; null turns the host panel off.
+	host?: ((prev: HostSample | undefined) => Promise<HostSnapshot>) | null;
 };
 export type DashResult = { print?: string };
 type TriageState = { candidates: Candidate[]; index: number; keys: KeyState };
@@ -99,6 +103,11 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 	let closed = false;
 	let triage: TriageState | undefined;
 	let checking = false;
+	let refreshedAt: Date | undefined;
+	let stale = false;
+	const collector = deps.host === undefined ? (prev: HostSample | undefined) => collectHost(prev) : deps.host;
+	let host: HostSnapshot | undefined;
+	let collecting = false;
 	const checkAbort = new AbortController();
 	const jobDeps = (): JobDeps => ({ ...deps.jobs, signal: checkAbort.signal });
 	const modals: Modal[] = [];
@@ -118,14 +127,32 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		model = buildDashModel({ sessions, triageCount: openCandidates(store).length, jobs: store.listJobs(), now: store.clock() });
 		const rows = visibleRows();
 		if (!rows.some((row) => row.key === selected)) selected = rows[0]?.key ?? null;
+		refreshedAt = store.clock();
+		stale = false;
 	}
 
 	function safeReload(): void {
 		try {
 			reload();
 		} catch (error) {
+			stale = true;
 			message = errorMessage(error);
 		}
+	}
+
+	// Host collection is async and never fatal: one in flight at a time, and the frame is redrawn when it lands.
+	function collectHostNow(): void {
+		if (!collector || closed || collecting) return;
+		collecting = true;
+		collector(host?.sample)
+			.then((snapshot) => {
+				host = snapshot;
+			})
+			.catch(() => {})
+			.finally(() => {
+				collecting = false;
+				if (!closed) render();
+			});
 	}
 
 	function triageLines(state: TriageState, width: number, height: number): string[] {
@@ -151,7 +178,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 			? top.lines(width, height, style)
 			: triage
 				? triageLines(triage, width, height)
-				: renderDash(model, { selected, filter: keys.filter, editing: keys.editing, message }, width, height, style);
+				: renderDash(model, { selected, filter: keys.filter, editing: keys.editing, message, refreshedAt, stale }, width, height, style, host);
 		term.write(frame(lines));
 	}
 
@@ -322,6 +349,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		if (key === "R") {
 			message = "Refreshed";
 			track("refresh");
+			collectHostNow();
 			backgroundCheck();
 			return;
 		}
@@ -526,12 +554,14 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		message = errorMessage(error);
 	}
 	render();
+	collectHostNow();
 	backgroundCheck();
 	const refreshMs = deps.refreshMs ?? DEFAULT_REFRESH_MS;
 	if (refreshMs > 0) {
 		timer = setInterval(() => {
 			if (busy || closed || modals.length > 0 || keys.confirming || triage) return;
 			safeReload();
+			collectHostNow();
 			render();
 		}, refreshMs);
 	}

@@ -28,6 +28,7 @@ function fakeTerminal(columns = 100, rows = 30) {
   return t;
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+const TITLE = /^Work dashboard · \d\d:\d\d:\d\d$/;
 const PANES = ['%1\t@1\tsap-rfc\tmain\t/src/sap\tnode', '%5\t@5\tshell\tmain\t/home\tzsh'].join('\n');
 
 function tmuxFake(calls) {
@@ -61,13 +62,13 @@ async function fixture({ restored = true } = {}) {
   return { rt, store };
 }
 
-function open(rt, { insideTmux = true, kills = [], run = async () => ({ code: 0, output: 'ok', timedOut: false }) } = {}) {
-  const terminal = fakeTerminal();
+function open(rt, { insideTmux = true, kills = [], run = async () => ({ code: 0, output: 'ok', timedOut: false }), host = null, columns } = {}) {
+  const terminal = fakeTerminal(columns);
   const calls = [];
   const ran = [];
   const result = runDash({
     runtime: rt, terminal, tmux: tmuxFake(calls), insideTmux, readers: alive(11, 13), style: plainStyle, refreshMs: 0,
-    bootId: () => 'boot-1', fileExists: () => true, kill: (pid, signal) => kills.push([pid, signal]),
+    bootId: () => 'boot-1', fileExists: () => true, kill: (pid, signal) => kills.push([pid, signal]), host,
     jobs: { run: async (command, ...rest) => { ran.push(command); return run(command, ...rest); }, pidAlive: () => true },
   });
   return { terminal, calls, result, kills, ran };
@@ -78,7 +79,7 @@ test('the dashboard shows parents with their children and jumps to a live sessio
   const { rt } = await fixture();
   const d = open(rt);
   const screen = d.terminal.screen();
-  assert.equal(screen[0], 'Work dashboard');
+  assert.match(screen[0], TITLE);
   assert.equal(screen[1], 'Decisions (1)');
   assert.match(screen[2], /^> needs-me\s+sap-rfc\s+-\s+0s\s+"Trim the overview\?"$/);
   assert.match(screen[3], /^ {2}needs-me\s+impl-parser\s+-\s+0s\s+"new session"$/);
@@ -119,7 +120,7 @@ test('Enter on a child opens its read-only transcript, and any key returns', asy
   assert.ok(screen.includes('  Implement the parser'));
   assert.ok(screen.includes('  Which test runner should I use?'));
   d.terminal.send('q');
-  assert.equal(d.terminal.screen()[0], 'Work dashboard');
+  assert.match(d.terminal.screen()[0], TITLE);
   await tick();
   d.terminal.send('q');
   await d.result;
@@ -178,12 +179,12 @@ test('the filter hides rows as you type and Esc clears it', async () => {
   const d = open(rt);
   d.terminal.send('/', 'i', 'n', 'f', 'r', 'a');
   let screen = d.terminal.screen();
-  assert.equal(screen[0], 'Work dashboard  /infra_');
+  assert.match(screen[0], /^Work dashboard · \d\d:\d\d:\d\d {2}\/infra_$/);
   assert.equal(screen.some((line) => line.includes('sap-rfc')), false);
   assert.match(screen.find((line) => line.startsWith('> ')), /crashed\s+infra/);
   d.terminal.send('\x1b');
   screen = d.terminal.screen();
-  assert.equal(screen[0], 'Work dashboard');
+  assert.match(screen[0], TITLE);
   assert.ok(screen.some((line) => line.includes('sap-rfc')));
   d.terminal.send('q');
   await d.result;
@@ -198,7 +199,7 @@ test('? shows the help and any key returns', async () => {
   assert.ok(d.terminal.screen().some((line) => line.includes('x then y')));
   d.terminal.send('z');
   await tick();
-  assert.equal(d.terminal.screen()[0], 'Work dashboard');
+  assert.match(d.terminal.screen()[0], TITLE);
   d.terminal.send('q');
   await d.result;
 });
@@ -214,7 +215,7 @@ test('the triage line opens triage, and dismissing the last candidate returns to
   d.terminal.send('d');
   await tick();
   assert.equal(store.isDismissed('k1'), true);
-  assert.equal(d.terminal.screen()[0], 'Work dashboard');
+  assert.match(d.terminal.screen()[0], TITLE);
   assert.equal(d.terminal.screen().at(-1), 'Triage inbox is empty');
   d.terminal.send('q');
   await d.result;
@@ -312,6 +313,28 @@ test('opening the dashboard checks stale jobs in the background', async () => {
   await tick();
   assert.deepEqual(d.ran, ['curl -fs localhost:8080']);
   assert.equal(store.getJob('J-1').lastCheckOutput, 'still down');
+  d.terminal.send('q');
+  await d.result;
+});
+
+test('the host panel appears once collection lands, and R collects again', async () => {
+  const { rt } = await fixture();
+  const samples = [];
+  const snapshot = {
+    hostname: 'devbox', uptimeSeconds: 3600, cpuCount: 4, load: [1, 1, 1], cpuPercent: 10, corePercents: [10, 10, 10, 10],
+    memory: null, cgroup: { memoryMaxBytes: null, memoryCurrentBytes: null, cpuLimit: null, pidsMax: null, pidsCurrent: null },
+    disks: [], topCpu: [], topMemory: [], piProcesses: 2, orphans: [], sample: { at: 1, cpu: [], procTicks: new Map() },
+  };
+  const d = open(rt, { columns: 160, host: async (prev) => { samples.push(prev); return snapshot; } });
+  assert.equal(d.terminal.screen()[0].includes('devbox'), false);
+  await tick();
+  const screen = d.terminal.screen();
+  assert.match(screen[0], /^Work dashboard · devbox · \d\d:\d\d:\d\d$/);
+  assert.match(screen[1], / │ Host {3}up 1h · 4 cpu · load 1.00 1.00 1.00$/);
+  assert.ok(screen.some((line) => line.includes('│ Pi     2 processes · 2 live sessions')));
+  d.terminal.send('R');
+  await tick();
+  assert.deepEqual(samples, [undefined, snapshot.sample]);
   d.terminal.send('q');
   await d.result;
 });
