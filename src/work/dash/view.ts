@@ -162,8 +162,7 @@ export function renderDash(model: DashModel, state: ViewState, width: number, he
 		const panelLines = renderHostPanel(host, liveSessions, PANEL_WIDTH, bodyHeight, style);
 		for (let i = 0; i < Math.max(visible.length, panelLines.length); i++) {
 			const left = visible[i] ?? "";
-			const right = panelLines[i];
-			lines.push(right === undefined ? left : `${left}${" ".repeat(Math.max(0, leftWidth - visibleWidth(left)))}${style.dim(SEPARATOR)}${right}`);
+			lines.push(`${left}${" ".repeat(Math.max(0, leftWidth - visibleWidth(left)))}${style.dim(SEPARATOR)}${panelLines[i] ?? ""}`);
 		}
 	} else lines.push(...visible);
 	lines.push(style.dim(truncate(hintsFor(all.find((row) => row.key === state.selected)), width)), truncate(oneLine(state.message), width));

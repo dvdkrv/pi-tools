@@ -114,6 +114,8 @@ test('with a host, a wide frame adds the side panel and a narrow one a strip und
   assert.equal(wide.at(-3), '  closed     old-tool      -                                5d'.padEnd(105) + ' │ Orphan ssh 2');
   assert.ok(wide.some((line) => line.includes('│ Pi     11 processes · 5 live sessions')));
   assert.equal(wide.at(-2), LIVE_HINTS);
+  const short = plain(renderDash(model(), state(), 160, 24, plainStyle, { ...HOST, topCpu: [], topMemory: [], orphans: [] }));
+  assert.ok(short.slice(1, -2).every((line) => line.includes(' │')), 'the separator runs past a shorter panel');
 
   const narrow = plain(renderDash(model(), state({ refreshedAt: new Date(2026, 8, 25, 9, 4, 5), stale: true }), 80, 24, plainStyle, HOST));
   assert.match(narrow[0], /^Work dashboard · devbox · \d\d:\d\d:\d\d · stale$/);
