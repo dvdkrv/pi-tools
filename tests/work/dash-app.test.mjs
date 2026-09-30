@@ -315,3 +315,19 @@ test('opening the dashboard checks stale jobs in the background', async () => {
   d.terminal.send('q');
   await d.result;
 });
+
+test('x then y on a child with a running run records the stop before sending SIGTERM', async () => {
+  const { rt, store } = await fixture();
+  const brief = { goal: 'Implement the parser', kind: 'read-only', scope: [], nonGoals: [], acceptance: [], context: '', model: null, modelReason: null, from: null };
+  store.createChildRun({ leadSession: 'live-1', brief, model: 'anthropic/claude-sonnet-5', repo: null, budgetLines: null, budgetFiles: null }, 'session:live-1');
+  store.updateChildRun('C-1', { childSession: 'child-1', pid: 13 });
+  const d = open(rt);
+  d.terminal.send('j', 'x', 'y');
+  await tick();
+  assert.deepEqual(d.kills, [[13, 'SIGTERM']]);
+  const run = store.getChildRun('C-1');
+  assert.deepEqual([run.outcome, run.summary], ['stopped', 'stopped from the dashboard']);
+  assert.equal(store.listEvents().at(-1).actor, 'user');
+  d.terminal.send('q');
+  await d.result;
+});

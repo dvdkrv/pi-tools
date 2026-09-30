@@ -399,6 +399,9 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 			return;
 		}
 		if (key === "x" && session.pid) {
+			// The dashboard cannot reach the lead's RPC pipe: it records the stop, and the lead reports it.
+			const run = store.childRunForSession(session.id);
+			if (run?.outcome === "running") store.endChildRun(run.id, { outcome: "stopped", summary: "stopped from the dashboard" }, "user");
 			try {
 				kill(session.pid, "SIGTERM");
 				track("stop", { target: "child" });

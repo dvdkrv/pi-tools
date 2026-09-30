@@ -182,3 +182,28 @@ test('unhealthy jobs are decisions, and the Jobs section uses its own columns', 
   assert.ok(colored[2].startsWith('\x1b[31m'));
   assert.ok(colored[8].startsWith('\x1b[2m'));
 });
+
+test('a child row with a run shows its ID, model, spend, and diff against budget', () => {
+  const run = { id: 'C-4', model: 'anthropic/claude-sonnet-5', spendUsd: 1.2, diffLines: 212, budgetLines: 300, outcome: 'running', brief: { goal: 'Add retry to fetchJira' } };
+  const sessions = [
+    entry({ id: 'p', tmuxWindow: 'api', status: 'working' }),
+    entry({ id: 'c', parentSession: 'p', headless: true, tmuxPane: null, status: 'done', run }),
+    entry({ id: 'd', parentSession: 'p', headless: true, tmuxPane: null, status: 'done', run: { ...run, id: 'C-5', outcome: 'merged', budgetLines: null } }),
+  ];
+  const lines = plain(renderDash(buildDashModel({ sessions, triageCount: 0, now: NOW }), state({ selected: null }), 100, 20, plainStyle));
+  assert.ok(lines.some((line) => /^ {4}done\s+C-4\s+-\s+\S+\s+sonnet-5 \$1\.20 212\/300 "Add retry to fetchJira"$/.test(line)), lines.join('\n'));
+  assert.ok(lines.some((line) => /^ {4}done\s+C-5\s+-\s+\S+\s+merged sonnet-5 \$1\.20 read-only "Add retry to fetchJira"$/.test(line)), lines.join('\n'));
+});
+
+test('loadSessions attaches each child session its run', async () => {
+  const store = await memoryStore();
+  const start = (id, parentSession) => store.startSession({ id, file: null, cwd: '/src/api', name: null, pid: 1, tmuxPane: null, tmuxWindow: null, parentSession, headless: parentSession !== null });
+  start('p', null);
+  start('c', 'p');
+  const brief = { goal: 'Map it', kind: 'read-only', scope: [], nonGoals: [], acceptance: [], context: '', model: null, modelReason: null, from: null };
+  store.createChildRun({ leadSession: 'p', brief, model: 'anthropic/claude-sonnet-5', repo: null, budgetLines: null, budgetFiles: null }, 'session:p');
+  store.updateChildRun('C-1', { childSession: 'c' });
+  const entries = loadSessions(store, [], { kill: () => {}, environ: () => undefined });
+  assert.equal(entries.find((e) => e.id === 'c').run.id, 'C-1');
+  assert.equal(entries.find((e) => e.id === 'p').run, null);
+});

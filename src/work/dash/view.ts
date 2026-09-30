@@ -3,6 +3,8 @@ import type { DashModel, DashRow, SessionEntry } from "./model.ts";
 import { allRows, lastActivity } from "./model.ts";
 import type { Style } from "./text.ts";
 import { fit, formatAge, oneLine, sanitize, truncate, visibleWidth } from "./text.ts";
+import { modelShortName } from "../children/format.ts";
+import type { ChildRun } from "../types.ts";
 
 export type ViewState = { selected: string | null; filter: string; editing: boolean; message: string };
 export type Cells = { label: string; window: string; item: string; age: string; note: string };
@@ -22,6 +24,12 @@ export function sessionLabel(session: SessionEntry): string {
 	return session.status === "waiting-external" ? "waiting" : session.status;
 }
 
+function childRunNote(run: ChildRun): string {
+	const outcome = run.outcome === "running" ? "" : `${run.outcome} `;
+	const diff = run.budgetLines === null ? "read-only" : `${run.diffLines}/${run.budgetLines}`;
+	return `${outcome}${modelShortName(run.model)} $${run.spendUsd.toFixed(2)} ${diff} "${run.brief.goal}"`;
+}
+
 export function rowCells(row: DashRow, now: Date, wide: boolean): Cells {
 	if (row.kind === "triage") return { label: "triage", window: "", item: "", age: "", note: `${row.count} pending candidate${row.count === 1 ? "" : "s"}` };
 	if (row.kind === "job" || row.kind === "alert") {
@@ -38,9 +46,9 @@ export function rowCells(row: DashRow, now: Date, wide: boolean): Cells {
 	const s = row.session;
 	const child = s.parentSession !== null;
 	const since = child || s.liveness !== "live" ? lastActivity(s) : s.statusAt;
-	const window = child ? (s.name ?? `child ${s.id.slice(0, 8)}`) : (s.tmuxWindow ?? basename(s.cwd));
+	const window = s.run ? s.run.id : child ? (s.name ?? `child ${s.id.slice(0, 8)}`) : (s.tmuxWindow ?? basename(s.cwd));
 	const item = s.itemId ? (wide && s.itemTitle ? `${s.itemId} ${s.itemTitle}` : s.itemId) : "-";
-	const note = s.note ? `"${s.note}"` : child ? "" : (s.name ?? "");
+	const note = s.run ? childRunNote(s.run) : s.note ? `"${s.note}"` : child ? "" : (s.name ?? "");
 	return { label: sessionLabel(s), window: oneLine(window), item: oneLine(item), age: formatAge(now.getTime() - Date.parse(since)), note: oneLine(note) };
 }
 

@@ -2,10 +2,10 @@ import type { PidReaders, ProbedSession } from "../liveness.ts";
 import { probeSessions } from "../liveness.ts";
 import type { WorkStore } from "../store.ts";
 import type { TmuxPane } from "../tmux.ts";
-import type { Job, Session } from "../types.ts";
+import type { ChildRun, Job, Session } from "../types.ts";
 
 export type SectionId = "decisions" | "waiting" | "working" | "jobs" | "other";
-export type SessionEntry = ProbedSession & { itemId: string | null; itemTitle: string | null };
+export type SessionEntry = ProbedSession & { itemId: string | null; itemTitle: string | null; run?: ChildRun | null };
 export type DashRow =
 	| { kind: "session"; key: string; session: SessionEntry; depth: 0 | 1 }
 	| { kind: "triage"; key: string; count: number }
@@ -25,7 +25,8 @@ export function loadSessions(store: WorkStore, panes: readonly TmuxPane[] | unde
 	return probeSessions(store.listSessions(), panes, readers).map((session) => {
 		const link = store.sessionLink(session.id);
 		const item = link ? store.getItem(link.itemId) : undefined;
-		return { ...session, itemId: item?.id ?? null, itemTitle: item?.title ?? null };
+		const run = session.parentSession ? (store.childRunForSession(session.id) ?? null) : null;
+		return { ...session, itemId: item?.id ?? null, itemTitle: item?.title ?? null, run };
 	});
 }
 
