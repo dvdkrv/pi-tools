@@ -31,7 +31,7 @@ test('formatBytes uses 1024 units, one decimal below 100', () => {
 test('panel renders host, cpu, memory, disks, top, pi, and orphan lines at width 52', () => {
   assert.deepEqual(trimmed(renderHostPanel(host(), 9, 52, 20, plainStyle)), [
     'Host   up 172d · 16 cpu · load 4.52 3.91 4.02',
-    'CPU    28%  ▃▁▁▂▁▁▇▁▁▁▁▂▁▁▁▁',
+    'CPU    28%  ▃▁▁▂▁▁█▁▁▁▁▂▁▁▁▁',
     'Mem    38%  23.1/60.1G',
     'Swap   13%  1.0/8.0G',
     'Pids   312/4096',
@@ -80,7 +80,7 @@ test('percentages turn yellow at 80 and red at 95, labels are dim', () => {
   const disks = lines.filter((line) => line.includes('/100G'));
   assert.ok(disks[0].includes('\x1b[33m 89%\x1b[39m'));
   assert.ok(disks[1].includes('\x1b[31m 97%\x1b[39m'));
-  assert.ok(lines[0].startsWith('\x1b[2mHost  \x1b[22m'));
+  assert.ok(lines[0].startsWith('\x1b[2mHost   \x1b[22m'));
   assert.ok(lines[2].includes('38%') && !lines[2].includes('\x1b[33m38%'));
   assert.ok(renderHostStrip(host({ cpuPercent: 96 }), 9, 80, ansiStyle).includes('cpu \x1b[31m96%\x1b[39m'));
 });
@@ -92,6 +92,6 @@ test('every line fits the width and height caps the panel', () => {
   }
   assert.equal(renderHostPanel(host(), 9, 40, 3, plainStyle).length, 3);
   const wrapped = trimmed(renderHostPanel(host(), 9, 24, 20, plainStyle));
-  assert.equal(wrapped[1], 'CPU    28%  ▃▁▁▂▁▁▇▁▁▁▁▂');
+  assert.equal(wrapped[1], 'CPU    28%  ▃▁▁▂▁▁█▁▁▁▁▂');
   assert.equal(wrapped[2], '      ▁▁▁▁');
 });
