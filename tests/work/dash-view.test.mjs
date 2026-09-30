@@ -59,13 +59,11 @@ test('an 80-column frame', () => {
     'Work dashboard',
     'Decisions (3)',
     '> needs-me   sap-rfc       W-7  12m  "Trim the overview to 1.5k words?"',
-    '    needs-me   impl-auth     -     3m  "Which test runner?"',
+    '  needs-me     impl-auth   -     3m  "Which test runner?"',
     '  needs-me   payments-api  -     2m  Fix flaky test',
     '  triage     3 pending candidates',
     'Waiting (1)',
     '  waiting    web           W-3   3h  "CI run for PR 42"',
-    'Working (0)',
-    'Jobs (0)',
     'Other sessions (3)',
     '  done       docs          W-2   2h  "Published the guide"',
     '  crashed    infra         -    24h  "Which region first?"',
@@ -81,13 +79,11 @@ test('a 160-column frame shows item titles', () => {
     'Work dashboard',
     'Decisions (3)',
     '> needs-me   sap-rfc       W-7 SAP RFC connector overview  12m  "Trim the overview to 1.5k words?"',
-    '    needs-me   impl-auth     -                                3m  "Which test runner?"',
+    '  needs-me     impl-auth   -                                3m  "Which test runner?"',
     '  needs-me   payments-api  -                                2m  Fix flaky test',
     '  triage     3 pending candidates',
     'Waiting (1)',
     '  waiting    web           W-3 Launch checklist             3h  "CI run for PR 42"',
-    'Working (0)',
-    'Jobs (0)',
     'Other sessions (3)',
     '  done       docs          W-2 Docs refresh                 2h  "Published the guide"',
     '  crashed    infra         -                               24h  "Which region first?"',
@@ -97,29 +93,39 @@ test('a 160-column frame shows item titles', () => {
   ]);
 });
 
-test('ANSI styling highlights the selection and colors crashed rows', () => {
+test('ANSI styling highlights the selection, colors crashed rows, and colors only a status word', () => {
   const lines = renderDash(model(), state(), 80, 24, ansiStyle);
   assert.ok(lines[2].startsWith('\x1b[7m> needs-me'));
-  assert.ok(lines[12].startsWith('\x1b[31m  crashed'));
+  assert.ok(lines[10].startsWith('\x1b[31m  crashed'));
+  assert.equal(lines[3], '  \x1b[33mneeds-me\x1b[39m     impl-auth   -     3m  "Which test runner?"');
+  assert.equal(lines[7], '  \x1b[36mwaiting\x1b[39m    web           W-3   3h  "CI run for PR 42"');
   assert.ok(lines.every((line) => !line.includes('\n')));
 });
 
 test('the filter hides non-matching rows, matches item titles at any width, and shows in the title', () => {
   assert.deepEqual(plain(renderDash(model(), state({ selected: 'session:o2', filter: 'infra' }), 80, 24, plainStyle)), [
     'Work dashboard  /infra',
-    'Decisions (0)',
-    'Waiting (0)',
-    'Working (0)',
-    'Jobs (0)',
     'Other sessions (1)',
     '> crashed    infra         -    24h  "Which region first?"',
+    HINTS,
+    '',
+  ]);
+  assert.deepEqual(plain(renderDash(model(), state({ selected: null, filter: 'nothing' }), 80, 24, plainStyle)), [
+    'Work dashboard  /nothing',
+    '  No rows match /nothing',
+    HINTS,
+    '',
+  ]);
+  assert.deepEqual(plain(renderDash(buildDashModel({ sessions: [], triageCount: 0, now: NOW }), state({ selected: null }), 80, 24, plainStyle)), [
+    'Work dashboard',
+    '  Nothing to show',
     HINTS,
     '',
   ]);
   const byTitle = plain(renderDash(model(), state({ selected: null, filter: 'launch', editing: true }), 80, 24, plainStyle));
   assert.equal(byTitle[0], 'Work dashboard  /launch_');
   assert.ok(byTitle.includes('  waiting    web           W-3   3h  "CI run for PR 42"'));
-  assert.equal(byTitle.length, 9);
+  assert.equal(byTitle.length, 5);
 });
 
 test('scrolling keeps the selected row visible, and the message line is last', () => {
@@ -162,25 +168,23 @@ const JOBS = [
   jobEntry({ id: 'J-3', name: 'old-sync', stoppedAt: ago(60), lastCheckAt: ago(2880), lastCheckStatus: 'healthy', lastCheckOutput: 'ok' }),
 ];
 
-test('unhealthy jobs are decisions, and the Jobs section uses its own columns', () => {
+test('an unhealthy job is listed once, and job rows share the session columns', () => {
   const m = buildDashModel({ sessions: [], triageCount: 0, jobs: JOBS, now: NOW });
   assert.deepEqual(m.sections[0].rows.map((r) => r.key), ['alert:J-2']);
-  assert.deepEqual(m.sections[3].rows.map((r) => r.key), ['job:J-2', 'job:J-1', 'job:J-3']);
-  assert.deepEqual(plain(renderDash(m, state({ selected: 'alert:J-2' }), 80, 24, plainStyle)).slice(0, 10), [
+  assert.deepEqual(m.sections[3].rows.map((r) => r.key), ['job:J-1', 'job:J-3']);
+  assert.deepEqual(plain(renderDash(m, state({ selected: 'alert:J-2' }), 160, 24, plainStyle)), [
     'Work dashboard',
     'Decisions (1)',
     '> unhealthy  dev-server      process    1m  connection refused',
-    'Waiting (0)',
-    'Working (0)',
-    'Jobs (3)',
-    '  unhealthy  dev-server      process    1m  connection refused',
+    'Jobs (2)',
     '  healthy    nightly-export  0 3 * * *  5m  wrote 1204 rows',
     '  stopped    old-sync        cron       2d  ok',
-    'Other sessions (0)',
+    HINTS,
+    '',
   ]);
-  const colored = renderDash(m, state({ selected: null }), 80, 24, ansiStyle);
+  const colored = renderDash(m, state({ selected: null }), 160, 24, ansiStyle);
   assert.ok(colored[2].startsWith('\x1b[31m'));
-  assert.ok(colored[8].startsWith('\x1b[2m'));
+  assert.ok(colored[5].startsWith('\x1b[2m'));
 });
 
 test('a child row with a run shows its ID, model, spend, and diff against budget', () => {
@@ -191,8 +195,8 @@ test('a child row with a run shows its ID, model, spend, and diff against budget
     entry({ id: 'd', parentSession: 'p', headless: true, tmuxPane: null, status: 'done', run: { ...run, id: 'C-5', outcome: 'merged', budgetLines: null } }),
   ];
   const lines = plain(renderDash(buildDashModel({ sessions, triageCount: 0, now: NOW }), state({ selected: null }), 100, 20, plainStyle));
-  assert.ok(lines.some((line) => /^ {4}done\s+C-4\s+-\s+\S+\s+sonnet-5 \$1\.20 212\/300 "Add retry to fetchJira"$/.test(line)), lines.join('\n'));
-  assert.ok(lines.some((line) => /^ {4}done\s+C-5\s+-\s+\S+\s+merged sonnet-5 \$1\.20 read-only "Add retry to fetchJira"$/.test(line)), lines.join('\n'));
+  assert.ok(lines.some((line) => /^ {2}done {9}C-4\s+-\s+\S+\s+sonnet-5 \$1\.20 212\/300 "Add retry to fetchJira"$/.test(line)), lines.join('\n'));
+  assert.ok(lines.some((line) => /^ {2}done {9}C-5\s+-\s+\S+\s+merged sonnet-5 \$1\.20 read-only "Add retry to fetchJira"$/.test(line)), lines.join('\n'));
 });
 
 test('loadSessions attaches each child session its run', async () => {
