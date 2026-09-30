@@ -5,7 +5,7 @@
 //   onPrompt          "settle" (default): emit agent_start, one assistant message_end, agent_end, and agent_settled
 //                     "model-error": settle with an assistant errorMessage; "hang": accept the prompt and do nothing;
 //                     "exit": exit with exitCode shortly after accepting
-//   errorMessage      assistant error for onPrompt "model-error"
+//   errorMessage      assistant error for onPrompt "model-error"; stopReason overrides its "error" stop reason
 //   exitCode          exit code for onPrompt "exit" (default 1)
 //   commit            { file, text }: write the file in the cwd and commit it when the prompt arrives
 //   settleOnFollowUp  emit agent_settled after a follow_up
@@ -38,7 +38,7 @@ const settle = () => {
 
 const modelError = () => {
   send({ type: 'agent_start' });
-  send({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: behavior.errorMessage } });
+  send({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: behavior.stopReason ?? 'error', errorMessage: behavior.errorMessage } });
   send({ type: 'agent_end', messages: [] });
   send({ type: 'agent_settled' });
 };

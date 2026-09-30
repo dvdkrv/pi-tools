@@ -61,8 +61,9 @@ function trackAssistant(handle: Handle, event: RpcEvent): void {
 	const message = event.message;
 	if (!message || typeof message !== "object" || Array.isArray(message) || (message as Record<string, unknown>).role !== "assistant") return;
 	const assistant = message as Record<string, unknown>;
+	// Only a provider error counts: an aborted message (a stop or the spend cap) keeps its own outcome.
+	const errored = assistant.stopReason === "error";
 	const detail = typeof assistant.errorMessage === "string" && assistant.errorMessage.trim() ? assistant.errorMessage : null;
-	const errored = assistant.stopReason === "error" || detail !== null;
 	handle.lastAssistantErrored = errored;
 	if (errored) handle.lastAssistantError = detail ?? "unknown error";
 	else handle.successfulAssistant = true;

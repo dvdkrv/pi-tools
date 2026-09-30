@@ -117,6 +117,13 @@ test('a child whose first model call errors fails with the model error and keeps
   assert.match(l.messages[0], /^Child C-1 finished: failed[\s\S]*401 Unauthorized: invalid API key/);
 });
 
+test('an aborted assistant message is not a model error', async () => {
+  const l = await lead({ behavior: { onPrompt: 'model-error', stopReason: 'aborted', errorMessage: 'Request was aborted' }, declared: null });
+  l.supervisor.delegate('lead-1', l.repo, implement());
+  await until(() => l.messages.length === 1);
+  assert.equal(l.store.getChildRun('C-1').outcome, 'incomplete');
+});
+
 test('a child that cannot start fails the run and removes its worktree and branch', async () => {
   const l = await lead({ command: ['/nonexistent/pi'] });
   const { run } = l.supervisor.delegate('lead-1', l.repo, implement());
