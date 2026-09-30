@@ -53,7 +53,7 @@ test('sections order sessions, nest children under their parent, and drop old en
   assert.equal(buildDashModel({ sessions: SESSIONS, triageCount: 0, now: NOW }).sections[0].rows.some((r) => r.kind === 'triage'), false);
 });
 
-test('a child follows its parent into any section, and an orphaned child is listed under Other sessions', () => {
+test('a live child follows its parent into any section, and a live orphan is listed under Other sessions', () => {
   const m = buildDashModel({
     now: NOW,
     triageCount: 0,
@@ -66,6 +66,39 @@ test('a child follows its parent into any section, and an orphaned child is list
   assert.deepEqual(m.sections[0].rows, []);
   assert.deepEqual(m.sections[1].rows.map((r) => [r.key, r.depth]), [['session:p', 0], ['session:k', 1]]);
   assert.deepEqual(m.sections[4].rows.map((r) => [r.key, r.depth]), [['session:lost', 0]]);
+});
+
+test('ended children fold under a shown lead after its live children', () => {
+  const sessions = [
+    entry({ id: 'p', tmuxWindow: 'api', status: 'working' }),
+    entry({ id: 'live-1', parentSession: 'p', headless: true, tmuxPane: null }),
+    entry({ id: 'ended-1', parentSession: 'p', headless: true, tmuxPane: null, liveness: 'closed', alive: false }),
+    entry({ id: 'live-2', parentSession: 'p', headless: true, tmuxPane: null }),
+    entry({ id: 'ended-2', parentSession: 'p', headless: true, tmuxPane: null, liveness: 'crashed', alive: false }),
+    entry({ id: 'ended-3', parentSession: 'p', headless: true, tmuxPane: null, liveness: 'closed', alive: false }),
+  ];
+  const m = buildDashModel({ sessions, triageCount: 0, now: NOW });
+  assert.deepEqual(m.sections[2].rows.map((r) => [r.kind, r.key, r.depth, r.count]), [
+    ['session', 'session:p', 0, undefined],
+    ['session', 'session:live-1', 1, undefined],
+    ['session', 'session:live-2', 1, undefined],
+    ['ended', 'ended:p', 1, 3],
+  ]);
+  const lines = plain(renderDash(m, state({ selected: 'ended:p', filter: 'child sessions' }), 80, 24, plainStyle));
+  assert.deepEqual(lines, ['Work dashboard  /child sessions', 'Working (1)', '> ended        +3 ended child sessions', TAIL, '']);
+});
+
+test('ended orphans from different missing leads share one fold while live orphans stay listed', () => {
+  const sessions = [
+    entry({ id: 'live', parentSession: 'missing-a', headless: true, tmuxPane: null }),
+    entry({ id: 'ended-a', parentSession: 'missing-a', headless: true, tmuxPane: null, liveness: 'closed', alive: false }),
+    entry({ id: 'ended-b', parentSession: 'missing-b', headless: true, tmuxPane: null, liveness: 'crashed', alive: false }),
+  ];
+  const other = buildDashModel({ sessions, triageCount: 0, now: NOW }).sections[4].rows;
+  assert.deepEqual(other.map((r) => [r.kind, r.key, r.depth, r.count]), [
+    ['session', 'session:live', 0, undefined],
+    ['ended', 'ended:orphans', 0, 2],
+  ]);
 });
 
 test('an 80-column frame', () => {

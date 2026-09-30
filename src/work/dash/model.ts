@@ -8,6 +8,7 @@ export type SectionId = "decisions" | "waiting" | "working" | "jobs" | "other";
 export type SessionEntry = ProbedSession & { itemId: string | null; itemTitle: string | null; run?: ChildRun | null };
 export type DashRow =
 	| { kind: "session"; key: string; session: SessionEntry; depth: 0 | 1 }
+	| { kind: "ended"; key: string; count: number; depth: 0 | 1 }
 	| { kind: "triage"; key: string; count: number }
 	| { kind: "job"; key: string; job: Job }
 	| { kind: "alert"; key: string; job: Job };
@@ -46,9 +47,12 @@ export function buildDashModel(input: DashInput): DashModel {
 		placed.add(session.id);
 		const kids = [...(children.get(session.id) ?? [])].sort(byStart);
 		for (const kid of kids) placed.add(kid.id);
+		const liveKids = kids.filter((kid) => kid.liveness === "live");
+		const endedCount = kids.length - liveKids.length;
 		return [
 			{ kind: "session" as const, key: `session:${session.id}`, session, depth: 0 as const },
-			...kids.map((kid) => ({ kind: "session" as const, key: `session:${kid.id}`, session: kid, depth: 1 as const })),
+			...liveKids.map((kid) => ({ kind: "session" as const, key: `session:${kid.id}`, session: kid, depth: 1 as const })),
+			...(endedCount > 0 ? [{ kind: "ended" as const, key: `ended:${session.id}`, count: endedCount, depth: 1 as const }] : []),
 		];
 	});
 
@@ -70,7 +74,10 @@ export function buildDashModel(input: DashInput): DashModel {
 	const ended = top.filter((s) => s.liveness !== "live").sort(byRecentActivity);
 	const other = rows([...done, ...ended]);
 	const orphans = sessions.filter((s) => s.parentSession && !placed.has(s.id)).sort(byRecentActivity);
-	other.push(...orphans.map((session) => ({ kind: "session" as const, key: `session:${session.id}`, session, depth: 0 as const })));
+	const liveOrphans = orphans.filter((session) => session.liveness === "live");
+	other.push(...liveOrphans.map((session) => ({ kind: "session" as const, key: `session:${session.id}`, session, depth: 0 as const })));
+	const endedOrphanCount = orphans.length - liveOrphans.length;
+	if (endedOrphanCount > 0) other.push({ kind: "ended", key: "ended:orphans", count: endedOrphanCount, depth: 0 });
 
 	return {
 		now: input.now,

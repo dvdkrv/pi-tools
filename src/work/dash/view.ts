@@ -24,6 +24,7 @@ const WIDE_BODY = 100;
 
 function rowHints(row: DashRow | undefined): string[] {
 	if (!row) return [];
+	if (row.kind === "ended") return [];
 	if (row.kind === "triage") return ["enter triage"];
 	if (row.kind === "job" || row.kind === "alert") return row.job.stoppedAt ? ["enter details", "D delete"] : ["enter details", "c check", "x stop"];
 	const session = row.session;
@@ -36,8 +37,8 @@ export function hintsFor(row: DashRow | undefined): string {
 	return [...rowHints(row), "j/k move", "/ filter", "? all keys", "q quit"].join(" · ");
 }
 
-// A child row keeps its label in the label column and indents inside the window column.
-const indentWidth = (row: DashRow): number => (row.kind === "session" && row.depth === 1 ? 2 : 0);
+// A child row keeps its label in the label column and indents its content.
+const indentWidth = (row: DashRow): number => ((row.kind === "session" || row.kind === "ended") && row.depth === 1 ? 2 : 0);
 
 export function sessionLabel(session: SessionEntry): string {
 	if (session.liveness !== "live") return session.liveness;
@@ -51,6 +52,7 @@ function childRunNote(run: ChildRun): string {
 }
 
 export function rowCells(row: DashRow, now: Date, wide: boolean): Cells {
+	if (row.kind === "ended") return { label: "ended", window: "", item: "", age: "", note: `+${row.count} ended child session${row.count === 1 ? "" : "s"}` };
 	if (row.kind === "triage") return { label: "triage", window: "", item: "", age: "", note: `${row.count} pending candidate${row.count === 1 ? "" : "s"}` };
 	if (row.kind === "job" || row.kind === "alert") {
 		const job = row.job;
@@ -92,7 +94,7 @@ function widths(rows: readonly DashRow[], now: Date, wide: boolean, caps: Caps):
 
 function rowText(row: DashRow, now: Date, wide: boolean, w: Widths, width: number): string {
 	const cells = rowCells(row, now, wide);
-	if (row.kind === "triage") return truncate(`${fit(cells.label, LABEL_WIDTH)}${GAP}${cells.note}`, width);
+	if (row.kind === "triage" || row.kind === "ended") return truncate(`${fit(cells.label, LABEL_WIDTH)}${GAP}${" ".repeat(indentWidth(row))}${cells.note}`, width);
 	const window = `${" ".repeat(indentWidth(row))}${cells.window}`;
 	const head = [fit(cells.label, LABEL_WIDTH), fit(window, w.window), fit(cells.item, w.item), cells.age.padStart(w.age)].join(GAP);
 	return truncate(`${head}${GAP}${cells.note}`, width);
@@ -139,7 +141,8 @@ export function renderDash(model: DashModel, state: ViewState, width: number, he
 	let selectedLine = -1;
 	for (const section of shown.sections) {
 		if (section.rows.length === 0) continue;
-		const count = section.rows.filter((row) => row.kind !== "session" || row.depth === 0).length;
+		const rootCount = section.rows.filter((row) => (row.kind !== "session" && row.kind !== "ended") || row.depth === 0).length;
+		const count = rootCount || section.rows.length;
 		body.push(style.bold(truncate(`${section.title} (${count})`, leftWidth)));
 		for (const row of section.rows) {
 			const text = rowText(row, model.now, wide, w, leftWidth - 2);
