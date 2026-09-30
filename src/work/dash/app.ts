@@ -327,6 +327,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 			await ask<void>((resolve) => messageBox(`Job ${job.id}`, jobDetails(store, job, store.clock()), resolve));
 			return;
 		}
+		if (row.kind === "ended") return;
 		const session = row.session;
 		if (session.parentSession || (session.liveness === "live" && !session.tmuxPane)) {
 			await showTranscript(session);
@@ -370,7 +371,9 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 			return;
 		}
 		if (key === "L") {
-			const session = sessionOf(selectedRow());
+			const row = selectedRow();
+			if (row?.kind === "ended") return;
+			const session = sessionOf(row);
 			if (!session) {
 				message = "L links a session to an item";
 				return;
@@ -385,6 +388,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 
 	function canConfirm(key: string): boolean {
 		const row = selectedRow();
+		if (row?.kind === "ended") return false;
 		const job = jobOf(row);
 		if (job) {
 			if (key === "x" && !job.stoppedAt) return true;

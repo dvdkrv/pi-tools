@@ -126,6 +126,22 @@ test('Enter on a child opens its read-only transcript, and any key returns', asy
   await d.result;
 });
 
+test('session actions safely ignore an ended-child fold row', async () => {
+  const { rt, store } = await fixture();
+  store.startSession({ id: 'ended-child', file: null, cwd: '/src/api', name: 'finished', pid: 14, tmuxPane: null, tmuxWindow: null, parentSession: 'live-1', headless: true });
+  const d = open(rt);
+  d.terminal.send('j', 'j');
+  assert.match(d.terminal.screen().find((line) => line.startsWith('> ')), /ended\s+\+1 ended child session/);
+  for (const key of ['\r', 'x', 'D', 'L']) {
+    d.terminal.send(key);
+    await tick();
+    assert.equal(d.terminal.screen().at(-1), '');
+  }
+  assert.ok(store.getSession('ended-child'));
+  d.terminal.send('q');
+  await d.result;
+});
+
 test('x then y stops a running child with SIGTERM; x on a top-level session is refused', async () => {
   const { rt } = await fixture();
   const d = open(rt);
