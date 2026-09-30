@@ -40,9 +40,11 @@ test('real Pi SDK terminates each loop decision and schedules exactly one next i
   runtime.streamSimple = (_model, context) => {
     assert.ok(requests.length < 2, 'terminating loop control must prevent repeated model calls');
     const index = requests.length;
+    // Pi 0.99 carries the prompt and tool declarations in the transcript's system message.
+    const system = (context.messages ?? []).find(message => message.role === 'system');
     requests.push({
-      systemPrompt: context.systemPrompt,
-      tools: (context.tools ?? []).map(tool => ({
+      systemPrompt: context.systemPrompt ?? system?.content,
+      tools: (context.tools ?? system?.toolsAdded ?? []).map(tool => ({
         name: tool.name,
         description: tool.description,
         parameters: tool.parameters,
