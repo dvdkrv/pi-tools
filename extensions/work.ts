@@ -7,9 +7,15 @@ import { Type } from "typebox";
 import { captureItem } from "../src/work/capture.ts";
 import type { ChildGuard } from "../src/work/children/child-guard.ts";
 import { CHILD_RUN_ENV, createChildGuard, failClosedGuard, PARENT_PID_ENV } from "../src/work/children/child-guard.ts";
+import { renderInterrupted } from "../src/work/children/format.ts";
 import { runGit } from "../src/work/children/git.ts";
+import { CHILD_MESSAGE, LEAD_TOOLS, registerLeadTools } from "../src/work/children/lead-tools.ts";
+import { mergeChild } from "../src/work/children/merge.ts";
+import type { SupervisorDeps } from "../src/work/children/supervisor.ts";
+import { createSupervisor } from "../src/work/children/supervisor.ts";
 import { startWatchdog } from "../src/work/children/watchdog.ts";
 import { childrenConfig, expandHome } from "../src/work/config.ts";
+import type { GhRunner } from "../src/work/connectors/github.ts";
 import { registerAgentJob } from "../src/work/jobs.ts";
 import type { TmuxRunner } from "../src/work/planner.ts";
 import { defaultTmux, launchPlanner, PLANNER_ENV, shellQuote } from "../src/work/planner.ts";
@@ -41,6 +47,8 @@ export type WorkExtensionOptions = {
 	popup?: (args: string[]) => void;
 	childGit?: GitRunner;
 	watchdog?: typeof startWatchdog;
+	supervisor?: Partial<Omit<SupervisorDeps, "store" | "config" | "notify">>;
+	gh?: GhRunner;
 };
 
 export const PROPOSE_DESCRIPTION = "Propose a follow-up for the user's work triage inbox. Use only for work outside your current task's scope, or for work you would otherwise leave as \"not done yet\" at the end of the session. Do not propose normal progress on your own task. The user reviews every proposal; this tool cannot create items, change status, or contact Jira.";
@@ -135,6 +143,37 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 				if (message.role === "assistant") guard?.assistantCost(message.usage?.cost?.total ?? 0);
 			});
 		}
+		// Lead mode: delegation tools in every session that is not itself a child (only TUI sessions keep them active).
+		const notifyLead = (text: string): void => {
+			pi.sendMessage({ customType: CHILD_MESSAGE, content: text, display: true }, { deliverAs: "followUp", triggerTurn: true });
+		};
+		const supervisor = childRunId
+			? undefined
+			: createSupervisor({ store: () => rt().store, config: () => childrenConfig(rt().config), notify: notifyLead, pid: options.pid, ...options.supervisor });
+		if (supervisor) {
+			registerLeadTools(pi, {
+				supervisor,
+				merge: (leadSession, cwd, id) => {
+					const r = rt();
+					return mergeChild({ store: r.store, config: childrenConfig(r.config), accounts: r.config.github.accounts, gh: options.gh }, leadSession, cwd, id);
+				},
+			});
+		}
+		const startLead = (ctx: ExtensionContext): void => {
+			if (!supervisor) return;
+			if (ctx.mode !== "tui") {
+				pi.setActiveTools(pi.getActiveTools().filter((name) => !LEAD_TOOLS.includes(name)));
+				return;
+			}
+			try {
+				const r = rt();
+				for (const warning of r.warnings) if (warning.startsWith("children")) ctx.ui.notify(warning, "warning");
+				const interrupted = supervisor.recover(ctx.sessionManager.getSessionId());
+				if (interrupted.length > 0) notifyLead(renderInterrupted(interrupted));
+			} catch {
+				// The session tracker already warns once when the registry fails.
+			}
+		};
 
 		const refreshBadge = (ctx: StatusContext): void => {
 			try {
@@ -287,6 +326,7 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 				mode: ctx.mode,
 			});
 			startChild(ctx);
+			startLead(ctx);
 		});
 		pi.on("input", async (event) => {
 			tracker.input(event.text, event.source);
@@ -305,6 +345,7 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			unwatch = undefined;
 			stopWatchdog?.();
 			stopWatchdog = undefined;
+			await supervisor?.shutdownAll();
 		});
 	};
 }

@@ -39,6 +39,8 @@ function setup({ runtime, env = IN_TMUX, mode = 'tui' } = {}) {
     registerCommand() {},
     registerTool(definition) { tools.set(definition.name, definition); },
     on(name, handler) { events.set(name, handler); },
+    getActiveTools: () => [...tools.keys()],
+    setActiveTools() {},
   });
   const notes = [];
   const ctx = {
