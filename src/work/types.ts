@@ -224,7 +224,7 @@ export type UsageRow = { id: number; at: string; surface: UsageSurface; action: 
 export type ChildKind = "implement" | "read-only";
 export type ChildOutcome = "running" | "done" | "failed" | "over-budget" | "over-spend" | "incomplete" | "stopped" | "merged" | "discarded" | "interrupted";
 export type ChildEndOutcome = "done" | "failed" | "over-budget" | "over-spend" | "incomplete" | "stopped" | "interrupted";
-export type ChildFlag = "over-budget" | "over-spend" | "no-git" | "modified-files";
+export type ChildFlag = "over-budget" | "over-spend" | "no-git" | "modified-files" | "unpriced";
 export const CHILD_KINDS: readonly ChildKind[] = ["implement", "read-only"];
 
 export type Brief = {
@@ -255,7 +255,7 @@ export type ChildRun = {
 	pid: number | null;
 	outcome: ChildOutcome;
 	flags: ChildFlag[];
-	spendUsd: number;
+	spendUsd: number | null;
 	diffLines: number;
 	diffFiles: number;
 	budgetLines: number | null;

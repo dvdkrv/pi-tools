@@ -6,6 +6,7 @@
 //                     "model-error": settle with an assistant errorMessage; "hang": accept the prompt and do nothing;
 //                     "exit": exit with exitCode shortly after accepting
 //   errorMessage      assistant error for onPrompt "model-error"; stopReason overrides its "error" stop reason
+//   usage             assistant usage for onPrompt "settle" (default { cost: { total: 0.25 } }); when set, two assistant messages carry it
 //   exitCode          exit code for onPrompt "exit" (default 1)
 //   commit            { file, text }: write the file in the cwd and commit it when the prompt arrives
 //   settleOnFollowUp  emit agent_settled after a follow_up
@@ -31,7 +32,8 @@ process.on('SIGTERM', () => {
 
 const settle = () => {
   send({ type: 'agent_start' });
-  send({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }], usage: { cost: { total: 0.25 } } } });
+  send({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }], usage: behavior.usage ?? { cost: { total: 0.25 } } } });
+  if (behavior.usage) send({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Again.' }], usage: behavior.usage } });
   send({ type: 'agent_end', messages: [] });
   send({ type: 'agent_settled' });
 };

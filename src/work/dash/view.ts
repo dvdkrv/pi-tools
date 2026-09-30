@@ -48,7 +48,8 @@ export function sessionLabel(session: SessionEntry): string {
 function childRunNote(run: ChildRun): string {
 	const outcome = run.outcome === "running" ? "" : `${run.outcome} `;
 	const diff = run.budgetLines === null ? "read-only" : `${run.diffLines}/${run.budgetLines}`;
-	return `${outcome}${modelShortName(run.model)} $${run.spendUsd.toFixed(2)} ${diff} "${run.brief.goal}"`;
+	const spend = run.spendUsd === null ? "—" : `$${run.spendUsd.toFixed(2)}`;
+	return `${outcome}${modelShortName(run.model)} ${spend} ${diff} "${run.brief.goal}"`;
 }
 
 export function rowCells(row: DashRow, now: Date, wide: boolean): Cells {

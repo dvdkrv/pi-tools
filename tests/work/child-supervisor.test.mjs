@@ -124,6 +124,25 @@ test('an aborted assistant message is not a model error', async () => {
   assert.equal(l.store.getChildRun('C-1').outcome, 'incomplete');
 });
 
+test('a child on a model with no price and zero reported cost tells the lead once that the cap is not enforced', async () => {
+  const usage = { input: 1200, output: 300, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  const l = await lead({ behavior: { commit: COMMIT, usage } });
+  l.supervisor.delegate('lead-1', l.repo, implement({ model: 'ai-gw-other/unknown-model', model_reason: 'test' }));
+  await until(() => l.messages.length === 2);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(l.messages.length, 2);
+  assert.equal(l.messages[0], 'Child C-1: no price for ai-gw-other/unknown-model in children.pricing, so its spend is unknown and the $5.00 cap cannot be enforced. Add the model to children.pricing to enforce it.');
+  assert.match(l.messages[1], /^Child C-1 finished/);
+});
+
+test('a priced gateway model with zero reported cost sends no pricing notice', async () => {
+  const usage = { input: 1200, output: 300, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } };
+  const l = await lead({ behavior: { commit: COMMIT, usage } });
+  l.supervisor.delegate('lead-1', l.repo, implement({ model: 'ai-gw-openai/openai/gpt-5.6-sol', model_reason: 'test' }));
+  await until(() => l.messages.length === 1);
+  assert.match(l.messages[0], /^Child C-1 finished/);
+});
+
 test('a child that cannot start fails the run and removes its worktree and branch', async () => {
   const l = await lead({ command: ['/nonexistent/pi'] });
   const { run } = l.supervisor.delegate('lead-1', l.repo, implement());

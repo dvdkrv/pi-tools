@@ -303,6 +303,7 @@ function toJob(r: Row): Job {
 }
 
 function toChildRun(r: Row): ChildRun {
+	const flags = json<ChildFlag[]>(r.flags, []);
 	return {
 		id: childRunId(Number(r.num)),
 		leadSession: String(r.lead_session),
@@ -316,8 +317,8 @@ function toChildRun(r: Row): ChildRun {
 		baseCommit: text(r.base_commit),
 		pid: int(r.pid),
 		outcome: r.outcome as ChildOutcome,
-		flags: json<ChildFlag[]>(r.flags, []),
-		spendUsd: Number(r.spend_usd),
+		flags,
+		spendUsd: flags.includes("unpriced") ? null : Number(r.spend_usd),
 		diffLines: Number(r.diff_lines),
 		diffFiles: Number(r.diff_files),
 		budgetLines: int(r.budget_lines),

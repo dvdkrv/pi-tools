@@ -6,6 +6,7 @@ import type { ChildFlag, ChildRun } from "../types.ts";
 import type { DiffStats } from "./git.ts";
 import { measureDiff } from "./git.ts";
 import { BUILT_IN_IGNORE, expensiveVerdict, inScope, overBudgetAllowed, restrictedVerdict } from "./guards.ts";
+import { messageCost, priceFor } from "./pricing.ts";
 
 export const CHILD_RUN_ENV = "PI_WORK_CHILD_RUN";
 export const PARENT_PID_ENV = "PI_WORK_PARENT_PID";
@@ -24,7 +25,7 @@ export type ChildGuard = {
 	readonly flags: readonly ChildFlag[];
 	toolCall(toolName: string, input: Record<string, unknown>): GuardBlock | undefined;
 	toolResult(toolName: string): string | undefined;
-	assistantCost(cost: number): void;
+	assistantCost(usage: unknown): void;
 	agentEnd(): void;
 };
 
@@ -60,7 +61,7 @@ export function createChildGuard(deps: ChildGuardDeps): ChildGuard {
 	const ignore = [...BUILT_IN_IGNORE, ...repo.ignore];
 	const timeoutSeconds = Math.max(1, Math.round(config.commandTimeoutMinutes * 60));
 	const flags = new Set<ChildFlag>(run.flags);
-	let spend = run.spendUsd;
+	let spend = run.spendUsd ?? 0;
 	let spendWarned = false;
 	let pending: string | undefined;
 	let wipCommitted = false;
@@ -156,7 +157,14 @@ export function createChildGuard(deps: ChildGuardDeps): ChildGuard {
 			}
 			return notes.length > 0 ? notes.join("\n") : undefined;
 		},
-		assistantCost(cost) {
+		assistantCost(usage) {
+			if (flags.has("unpriced")) return;
+			const cost = messageCost(usage, priceFor(config.pricing, run.model));
+			if (cost === "unknown") {
+				flag("unpriced");
+				pending = undefined;
+				return;
+			}
 			if (!(cost > 0)) return;
 			spend += cost;
 			deps.record({ spendUsd: spend });

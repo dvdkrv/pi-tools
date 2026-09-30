@@ -18,6 +18,7 @@ import { CHILD_RUN_ENV, PARENT_PID_ENV } from "./child-guard.ts";
 import { formatChildRun, lastLine, renderResult } from "./format.ts";
 import { addWorktree, commitsSince, defaultBranchRef, excludeChildWorktrees, gitText, isClean, isDefaultBranch, measureDiff, removeWorktree, runGit } from "./git.ts";
 import { BUILT_IN_IGNORE } from "./guards.ts";
+import { messageCost, priceFor } from "./pricing.ts";
 import type { RpcChild, RpcEvent } from "./rpc.ts";
 import { spawnRpcChild } from "./rpc.ts";
 
@@ -67,6 +68,12 @@ function trackAssistant(handle: Handle, event: RpcEvent): void {
 	handle.lastAssistantErrored = errored;
 	if (errored) handle.lastAssistantError = detail ?? "unknown error";
 	else handle.successfulAssistant = true;
+}
+
+// An assistant message whose spend cannot be known: no reported cost, tokens used, and no price for the model.
+function unpricedUsage(event: RpcEvent, config: ChildrenConfig, model: string): boolean {
+	const message = event.message as { role?: unknown; usage?: unknown } | undefined;
+	return message?.role === "assistant" && messageCost(message.usage, priceFor(config.pricing, model)) === "unknown";
 }
 
 // Child worktrees live at <root>/.pi/worktrees/child-<id>, so the repository root is three levels up.
@@ -151,11 +158,16 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 		if (run.kind === "read-only") args.push("--exclude-tools", "edit,write");
 		const child = spawnRpcChild([...(deps.command ?? ["pi"]), ...args], { cwd: run.worktree ?? leadCwd, env });
 		const handle: Handle = { child, started: false, stopping: false, finished: false, successfulAssistant: false, lastAssistantError: null, lastAssistantErrored: false };
+		let unpricedNotified = false;
 		handles.set(run.id, handle);
 		store.updateChildRun(run.id, { pid: child.pid ?? null });
 		child.onEvent((event) => {
 			if (event.type === "message_end") trackAssistant(handle, event);
 			if (event.type === "agent_settled") void finish(run.id, { kind: "settled" });
+			if (event.type === "message_end" && !unpricedNotified && unpricedUsage(event, config, run.model)) {
+				unpricedNotified = true;
+				deps.notify(`Child ${run.id}: no price for ${run.model} in children.pricing, so its spend is unknown and the $${config.spendCapUsd.toFixed(2)} cap cannot be enforced. Add the model to children.pricing to enforce it.`);
+			}
 		});
 		child.onExit((exit) => {
 			void finish(run.id, { kind: "exited", detail: exit.signal ?? `code ${exit.code}` });

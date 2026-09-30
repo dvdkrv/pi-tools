@@ -19,7 +19,7 @@ export function lastLine(output: string): string {
 }
 
 export function formatChildRun(run: ChildRun, note: string): string {
-	const parts = [run.id, run.outcome, modelShortName(run.model), money(run.spendUsd)];
+	const parts = [run.id, run.outcome, modelShortName(run.model), run.spendUsd === null ? "—" : money(run.spendUsd)];
 	parts.push(run.kind === "implement" ? `${run.diffLines}/${run.budgetLines} lines ${run.diffFiles}/${run.budgetFiles} files` : "read-only");
 	if (run.acceptance.length > 0) parts.push(`acceptance ${run.acceptance.filter((result) => result.exitCode === 0).length}/${run.acceptance.length}`);
 	if (run.flags.length > 0) parts.push(`flags ${run.flags.join(",")}`);
@@ -51,7 +51,9 @@ export function renderResult(run: ChildRun, config: ChildrenConfig): string {
 		const code = result.exitCode === null ? "no exit code" : `exit ${result.exitCode}`;
 		lines.push(`Acceptance: ${verdict} \`${result.command}\` (${code}) ${result.summary}`.trimEnd());
 	}
-	lines.push(`Spend: ${money(run.spendUsd)} of ${money(config.spendCapUsd)}`);
+	lines.push(run.spendUsd === null
+		? `Spend: — of ${money(config.spendCapUsd)} (no price for ${run.model} in children.pricing; the cap is not enforced)`
+		: `Spend: ${money(run.spendUsd)} of ${money(config.spendCapUsd)}`);
 	if (run.branch && run.outcome !== "discarded") lines.push(`Branch: ${run.branch} (base ${short(run.baseCommit)})`);
 	lines.push(nextStep(run));
 	return lines.join("\n");
