@@ -198,7 +198,7 @@ The dashboard is a standalone Node program with a small built-in renderer (alter
 
 Sections are stacked vertically, each with a count. Empty sections are hidden. When every section is empty, one dim line says so. All row kinds share one set of column widths, and a child row indents inside the name column, so status words line up.
 
-The header shows the host name and the time of the last successful reload, plus `stale Ns` when a reload fails. The hint line depends on the selected row, for example `enter jump` for a live session or `enter details · c check` for a job, and always ends with `? all keys`.
+The header shows the host name and the time of the last successful reload, plus `stale` when the latest reload failed (its error is on the message line). The hint line depends on the selected row, for example `enter jump` for a live session or `enter details · c check` for a job, and always ends with `? all keys`.
 
 Color marks the status word only: yellow for `needs-me`, cyan for `waiting`. Whole rows are red for `crashed` and `unhealthy`, and dim for ended sessions and stopped jobs.
 
