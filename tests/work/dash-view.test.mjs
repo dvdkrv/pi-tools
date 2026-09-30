@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { load, memoryStore } from './helpers.mjs';
 
 const { buildDashModel, loadSessions } = await load('src/work/dash/model.ts');
-const { renderDash, HINTS } = await load('src/work/dash/view.ts');
+const { renderDash, hintsFor } = await load('src/work/dash/view.ts');
 const { plainStyle, ansiStyle } = await load('src/work/dash/text.ts');
 
 const NOW = new Date('2026-09-25T09:00:00.000Z');
@@ -26,6 +26,20 @@ const SESSIONS = [
 const model = () => buildDashModel({ sessions: SESSIONS, triageCount: 3, now: NOW });
 const state = (overrides = {}) => ({ selected: 'session:d1', filter: '', editing: false, message: '', ...overrides });
 const plain = (lines) => lines.map((line) => line.trimEnd());
+const TAIL = 'j/k move · / filter · ? all keys · q quit';
+const hints = (...parts) => [...parts, TAIL].join(' · ');
+const LIVE_HINTS = hints('enter jump', 'L link');
+const ENDED_HINTS = hints('enter reopen', 'L link', 'D delete');
+const G = 1024 ** 3;
+const HOST = {
+  hostname: 'devbox', uptimeSeconds: 172 * 86_400, cpuCount: 16, load: [4.52, 3.91, 4.02], cpuPercent: 28.4,
+  corePercents: [30, 4, 2, 15, 1, 3, 90, 2, 1, 0, 6, 14, 2, 1, 3, 1],
+  memory: { totalBytes: 60.1 * G, availableBytes: 37 * G, swapTotalBytes: 8 * G, swapFreeBytes: 7 * G },
+  cgroup: { memoryMaxBytes: null, memoryCurrentBytes: null, cpuLimit: null, pidsMax: 4096, pidsCurrent: 312 },
+  disks: [{ mount: '/', usedBytes: 366 * G, totalBytes: 416 * G }, { mount: '/home/u/data', usedBytes: 97 * G, totalBytes: 100 * G }],
+  topCpu: [{ pid: 2, comm: 'java', value: 31.4 }], topMemory: [{ pid: 2, comm: 'java', value: 4.2 * G }],
+  piProcesses: 11, orphans: [{ comm: 'ssh', count: 2 }], sample: { at: 0, cpu: [], procTicks: new Map() },
+};
 
 test('sections order sessions, nest children under their parent, and drop old ended sessions', () => {
   const m = model();
@@ -68,10 +82,9 @@ test('an 80-column frame', () => {
     '  done       docs          W-2   2h  "Published the guide"',
     '  crashed    infra         -    24h  "Which region first?"',
     '  closed     old-tool      -     5d',
-    HINTS,
+    LIVE_HINTS,
     '',
   ]);
-  assert.equal(HINTS, 'j/k move · enter open · L link · D delete · / filter · ? help · q quit');
 });
 
 test('a 160-column frame shows item titles', () => {
@@ -88,9 +101,25 @@ test('a 160-column frame shows item titles', () => {
     '  done       docs          W-2 Docs refresh                 2h  "Published the guide"',
     '  crashed    infra         -                               24h  "Which region first?"',
     '  closed     old-tool      -                                5d',
-    HINTS,
+    LIVE_HINTS,
     '',
   ]);
+});
+
+test('with a host, a wide frame adds the side panel and a narrow one a strip under the header', () => {
+  const wide = plain(renderDash(model(), state(), 160, 24, plainStyle, HOST));
+  assert.equal(wide[0], 'Work dashboard · devbox');
+  assert.equal(wide[1], 'Decisions (3)'.padEnd(105) + ' │ Host   up 172d · 16 cpu · load 4.52 3.91 4.02');
+  assert.match(wide[2], /^> needs-me {3}sap-rfc .* {2}│ CPU {4}28% {2}▃▁▁▂▁▁█▁▁▁▁▂▁▁▁▁$/);
+  assert.equal(wide.at(-3), '  closed     old-tool      -                                5d'.padEnd(105) + ' │ Orphan ssh 2');
+  assert.ok(wide.some((line) => line.includes('│ Pi     11 processes · 5 live sessions')));
+  assert.equal(wide.at(-2), LIVE_HINTS);
+
+  const narrow = plain(renderDash(model(), state({ refreshedAt: new Date(2026, 8, 25, 9, 4, 5), stale: true }), 80, 24, plainStyle, HOST));
+  assert.match(narrow[0], /^Work dashboard · devbox · \d\d:\d\d:\d\d · stale$/);
+  assert.equal(narrow[1], 'load 4.5/16 · cpu 28% · mem 38% · disk /home/u/data 97% · pi 11 · orphans 2');
+  assert.equal(narrow[2], 'Decisions (3)');
+  assert.equal(narrow.length, 15);
 });
 
 test('ANSI styling highlights the selection, colors crashed rows, and colors only a status word', () => {
@@ -107,19 +136,19 @@ test('the filter hides non-matching rows, matches item titles at any width, and 
     'Work dashboard  /infra',
     'Other sessions (1)',
     '> crashed    infra         -    24h  "Which region first?"',
-    HINTS,
+    ENDED_HINTS,
     '',
   ]);
   assert.deepEqual(plain(renderDash(model(), state({ selected: null, filter: 'nothing' }), 80, 24, plainStyle)), [
     'Work dashboard  /nothing',
     '  No rows match /nothing',
-    HINTS,
+    TAIL,
     '',
   ]);
   assert.deepEqual(plain(renderDash(buildDashModel({ sessions: [], triageCount: 0, now: NOW }), state({ selected: null }), 80, 24, plainStyle)), [
     'Work dashboard',
     '  Nothing to show',
-    HINTS,
+    TAIL,
     '',
   ]);
   const byTitle = plain(renderDash(model(), state({ selected: null, filter: 'launch', editing: true }), 80, 24, plainStyle));
@@ -134,7 +163,7 @@ test('scrolling keeps the selected row visible, and the message line is last', (
     '  done       docs          W-2   2h  "Published the guide"',
     '  crashed    infra         -    24h  "Which region first?"',
     '> closed     old-tool      -     5d',
-    HINTS,
+    ENDED_HINTS,
     'Refreshed',
   ]);
 });
@@ -179,12 +208,23 @@ test('an unhealthy job is listed once, and job rows share the session columns', 
     'Jobs (2)',
     '  healthy    nightly-export  0 3 * * *  5m  wrote 1204 rows',
     '  stopped    old-sync        cron       2d  ok',
-    HINTS,
+    hints('enter details', 'c check', 'x stop'),
     '',
   ]);
   const colored = renderDash(m, state({ selected: null }), 160, 24, ansiStyle);
   assert.ok(colored[2].startsWith('\x1b[31m'));
   assert.ok(colored[5].startsWith('\x1b[2m'));
+});
+
+test('hints follow the selected row', () => {
+  const rows = (m) => m.sections.flatMap((section) => section.rows);
+  const jobRows = rows(buildDashModel({ sessions: [], triageCount: 0, jobs: JOBS, now: NOW }));
+  assert.equal(hintsFor(jobRows.find((r) => r.key === 'job:J-1')), hints('enter details', 'c check', 'x stop'));
+  assert.equal(hintsFor(jobRows.find((r) => r.key === 'job:J-3')), hints('enter details', 'D delete'));
+  const sessionRows = rows(model());
+  assert.equal(hintsFor(sessionRows.find((r) => r.key === 'session:o3')), ENDED_HINTS);
+  assert.equal(hintsFor(sessionRows.find((r) => r.key === 'session:c1')), hints('enter transcript', 'x stop'));
+  assert.equal(hintsFor(sessionRows.find((r) => r.key === 'triage')), hints('enter triage'));
 });
 
 test('a child row with a run shows its ID, model, spend, and diff against budget', () => {
