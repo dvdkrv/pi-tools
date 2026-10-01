@@ -9,7 +9,8 @@ export type GithubAccount = { user: string; orgs: string[] };
 export type ProjectConfig = { slug: string; title: string; jiraEpic?: string; notesPath?: string };
 export type Rule = { project: string; repo?: string; jiraEpic?: string; jiraProject?: string };
 export type DashboardConfig = { showTriage: boolean };
-export type WorkConfig = { jira?: JiraConfig; github: { accounts: GithubAccount[] }; projects: ProjectConfig[]; rules: Rule[]; plannerCwd?: string; usage?: boolean; notifications?: boolean; children?: ChildrenConfig; dashboard?: DashboardConfig; bashTimeoutMinutes?: number };
+export type MessagingConfig = { autoJoin: boolean; sendsPerHour: number; paused: boolean | string[]; retentionDays: number; routeCooldownMinutes: number };
+export type WorkConfig = { jira?: JiraConfig; github: { accounts: GithubAccount[] }; projects: ProjectConfig[]; rules: Rule[]; plannerCwd?: string; usage?: boolean; notifications?: boolean; children?: ChildrenConfig; dashboard?: DashboardConfig; messaging?: MessagingConfig; bashTimeoutMinutes?: number };
 export type LoadedConfig = { config: WorkConfig; warnings: string[] };
 export type RepoChildrenConfig = { ignore: string[]; expensiveCommands: string[] };
 export type DiffBudgetConfig = { defaultLines: number; defaultFiles: number; maxLines: number; prLines: number };
@@ -41,6 +42,7 @@ export const DEFAULT_CHILDREN: ChildrenConfig = {
 };
 
 export const DEFAULT_BASH_TIMEOUT_MINUTES = 30;
+export const DEFAULT_MESSAGING: MessagingConfig = { autoJoin: true, sendsPerHour: 10, paused: false, retentionDays: 30, routeCooldownMinutes: 10 };
 
 // The timeout the tool_call hook gives a bash call that sets none (child runs keep their stricter commandTimeoutMinutes).
 export function bashTimeoutMinutes(config: WorkConfig): number {
@@ -49,6 +51,10 @@ export function bashTimeoutMinutes(config: WorkConfig): number {
 
 export function childrenConfig(config: WorkConfig): ChildrenConfig {
 	return config.children ?? DEFAULT_CHILDREN;
+}
+
+export function messagingConfig(config: WorkConfig): MessagingConfig {
+	return config.messaging ?? DEFAULT_MESSAGING;
 }
 
 // Merges every repos entry whose key names this repository, by basename or owner/name.
@@ -114,6 +120,37 @@ function positiveNumber(record: Record<string, unknown>, key: string, fallback: 
 	if (typeof value === "number" && Number.isFinite(value) && value > 0 && (!integer || Number.isInteger(value))) return value;
 	warnings.push(`${path}.${key} must be a positive ${integer ? "integer" : "number"}; using ${fallback}`);
 	return fallback;
+}
+
+export function parseMessaging(value: unknown, warnings: string[]): MessagingConfig {
+	const d = DEFAULT_MESSAGING;
+	if (!isRecord(value)) {
+		warnings.push("messaging must be an object; using the defaults");
+		return d;
+	}
+	let autoJoin = d.autoJoin;
+	if (value.autoJoin !== undefined) {
+		if (typeof value.autoJoin === "boolean") autoJoin = value.autoJoin;
+		else warnings.push(`messaging.autoJoin must be true or false; using ${d.autoJoin}`);
+	}
+	let sendsPerHour = positiveNumber(value, "sendsPerHour", d.sendsPerHour, "messaging", warnings, true);
+	if (sendsPerHour > 1000) {
+		warnings.push(`messaging.sendsPerHour must be at most 1000; using ${d.sendsPerHour}`);
+		sendsPerHour = d.sendsPerHour;
+	}
+	let paused: boolean | string[] = d.paused;
+	if (value.paused !== undefined) {
+		if (typeof value.paused === "boolean") paused = value.paused;
+		else if (Array.isArray(value.paused) && value.paused.every((name) => typeof name === "string" && name.trim())) paused = value.paused.map((name) => (name as string).trim());
+		else warnings.push("messaging.paused must be true, false, or a list of session names or id prefixes; using false");
+	}
+	return {
+		autoJoin,
+		sendsPerHour,
+		paused,
+		retentionDays: positiveNumber(value, "retentionDays", d.retentionDays, "messaging", warnings, true),
+		routeCooldownMinutes: positiveNumber(value, "routeCooldownMinutes", d.routeCooldownMinutes, "messaging", warnings, false),
+	};
 }
 
 function patternList(value: unknown, path: string, warnings: string[], regex: boolean): string[] {
@@ -280,6 +317,7 @@ export function parseWorkConfig(raw: string): LoadedConfig {
 		else warnings.push(`bashTimeoutMinutes must be a positive number; using ${DEFAULT_BASH_TIMEOUT_MINUTES}`);
 	}
 	if (data.children !== undefined) config.children = parseChildren(data.children, warnings);
+	if (data.messaging !== undefined) config.messaging = parseMessaging(data.messaging, warnings);
 	return { config, warnings };
 }
 

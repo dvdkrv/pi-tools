@@ -164,6 +164,26 @@ CREATE TABLE child_run (
 CREATE INDEX child_run_lead ON child_run(lead_session);
 CREATE INDEX child_run_child ON child_run(child_session);
 `,
+	`
+CREATE TABLE message_log (
+	id TEXT PRIMARY KEY,
+	at TEXT NOT NULL,
+	group_label TEXT NOT NULL,
+	sender_peer TEXT NOT NULL,
+	sender_session TEXT,
+	sender_name TEXT NOT NULL,
+	recipient_peer TEXT NOT NULL,
+	recipient_session TEXT,
+	recipient_name TEXT NOT NULL,
+	kind TEXT NOT NULL CHECK (kind IN ('notice', 'request', 'reply')),
+	in_reply_to TEXT,
+	state TEXT NOT NULL,
+	state_at TEXT NOT NULL,
+	body TEXT NOT NULL
+);
+CREATE INDEX message_log_at ON message_log(at);
+CREATE INDEX message_log_reply ON message_log(in_reply_to);
+`,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

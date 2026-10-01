@@ -1,11 +1,12 @@
 import { exportJsonl, importJsonl, writeRotatingBackup } from "./backup.ts";
 import { captureItem, resolveDue } from "./capture.ts";
 import { cliPromote, runCliTriage } from "./cli-triage.ts";
-import { expandHome } from "./config.ts";
+import { expandHome, messagingConfig } from "./config.ts";
 import { runDash } from "./dash/app.ts";
 import type { Terminal } from "./dash/terminal.ts";
 import { processTerminal } from "./dash/terminal.ts";
 import { checkJobs, formatJob } from "./jobs.ts";
+import { formatMessageLog, parseSince } from "./messages.ts";
 import type { PidReaders } from "./liveness.ts";
 import type { TmuxRunner } from "./planner.ts";
 import { defaultTmux, launchPlanner } from "./planner.ts";
@@ -384,6 +385,22 @@ const job: CliCommand = {
 	},
 };
 
+const messagesCommand: CliCommand = {
+	usage: "messages [--peer <name>] [--since <age>]   Read the message audit log (default 24h)",
+	async run(args, deps) {
+		if (deps.env.PI_CODING_AGENT !== undefined) throw new UsageError("work messages is for the user; agents cannot read message bodies.");
+		const flags = parseFlags(args, ["peer", "since"]);
+		const rt = deps.runtime();
+		const now = rt.store.clock();
+		const since = new Date(now.getTime() - parseSince(flags.since ?? "24h")).toISOString();
+		const retention = messagingConfig(rt.config).retentionDays;
+		rt.store.pruneMessageLog(new Date(now.getTime() - retention * DAY_MS).toISOString());
+		const entries = rt.store.listMessageLog({ since, peer: flags.peer });
+		deps.io.out(entries.length ? formatMessageLog(entries, now) : `No messages since ${since}.`);
+		return 0;
+	},
+};
+
 const usageCommand: CliCommand = {
 	usage: "usage [--days <n>]                   Markdown summary of how the tracker is used (default 30 days)",
 	async run(args, deps) {
@@ -411,7 +428,7 @@ const today: CliCommand = {
 };
 
 export const COMMANDS: Record<string, CliCommand> = {
-	add, list, show, set, project, sync, triage: triageCommand, today, promote, undismiss, recap, restore: restoreCommand, dash, job, usage: usageCommand, export: exportCommand, import: importCommand,
+	add, list, show, set, project, sync, triage: triageCommand, today, promote, undismiss, recap, restore: restoreCommand, dash, job, messages: messagesCommand, usage: usageCommand, export: exportCommand, import: importCommand,
 };
 
 export function usage(): string {

@@ -102,6 +102,25 @@ export type Plan = { date: string; itemIds: string[]; quickActions: string[]; no
 
 export type WorkEvent = { id: number; at: string; actor: string; entity: string; action: string; data: unknown };
 
+export type MessageLogKind = "notice" | "request" | "reply";
+export type MessageLogEntry = {
+	id: string;
+	at: string;
+	groupLabel: string;
+	senderPeer: string;
+	senderSession: string | null;
+	senderName: string;
+	recipientPeer: string;
+	recipientSession: string | null;
+	recipientName: string;
+	kind: MessageLogKind;
+	inReplyTo: string | null;
+	state: string;
+	stateAt: string;
+	body: string;
+};
+export const OPEN_MESSAGE_STATES = ["queued", "attempted"] as const;
+
 export type ConnectorRun = {
 	connector: string;
 	query: string;

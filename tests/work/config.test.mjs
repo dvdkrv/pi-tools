@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { load } from './helpers.mjs';
 
-const { parseWorkConfig, defaultConfigPath, defaultDataDir, expandHome } = await load('src/work/config.ts');
+const { parseWorkConfig, defaultConfigPath, defaultDataDir, expandHome, messagingConfig, DEFAULT_MESSAGING } = await load('src/work/config.ts');
 
 const valid = {
   jira: { site: 'https://example.atlassian.net/', email: 'user@example.com', secret: { command: ['pass', 'show', 'jira'] }, defaultProject: 'ABC' },
@@ -54,6 +54,51 @@ test('dashboard triage defaults off and validates its boolean setting', () => {
   const badValue = parseWorkConfig('{"dashboard":{"showTriage":"yes"}}');
   assert.deepEqual(badValue.config.dashboard, { showTriage: false });
   assert.deepEqual(badValue.warnings, ['dashboard.showTriage must be true or false; using false']);
+});
+
+test('messaging uses defaults when omitted and parses valid settings', () => {
+  assert.deepEqual(messagingConfig(parseWorkConfig('{}').config), DEFAULT_MESSAGING);
+  const { config, warnings } = parseWorkConfig(JSON.stringify({ messaging: {
+    autoJoin: false,
+    sendsPerHour: 24,
+    paused: ['reviewer', 'session-prefix'],
+    retentionDays: 14,
+    routeCooldownMinutes: 2.5,
+  } }));
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(messagingConfig(config), {
+    autoJoin: false,
+    sendsPerHour: 24,
+    paused: ['reviewer', 'session-prefix'],
+    retentionDays: 14,
+    routeCooldownMinutes: 2.5,
+  });
+});
+
+test('invalid messaging section and values warn and use defaults', () => {
+  const section = parseWorkConfig('{"messaging":[]}');
+  assert.deepEqual(messagingConfig(section.config), DEFAULT_MESSAGING);
+  assert.deepEqual(section.warnings, ['messaging must be an object; using the defaults']);
+
+  const invalid = parseWorkConfig(JSON.stringify({ messaging: {
+    autoJoin: 'yes',
+    sendsPerHour: 0,
+    paused: ['valid', 3],
+    retentionDays: 1.5,
+    routeCooldownMinutes: 0,
+  } }));
+  assert.deepEqual(messagingConfig(invalid.config), DEFAULT_MESSAGING);
+  assert.deepEqual(invalid.warnings, [
+    'messaging.autoJoin must be true or false; using true',
+    'messaging.sendsPerHour must be a positive integer; using 10',
+    'messaging.paused must be true, false, or a list of session names or id prefixes; using false',
+    'messaging.retentionDays must be a positive integer; using 30',
+    'messaging.routeCooldownMinutes must be a positive number; using 10',
+  ]);
+
+  const tooHigh = parseWorkConfig('{"messaging":{"sendsPerHour":1001}}');
+  assert.equal(messagingConfig(tooHigh.config).sendsPerHour, 10);
+  assert.deepEqual(tooHigh.warnings, ['messaging.sendsPerHour must be at most 1000; using 10']);
 });
 
 test('default paths follow XDG variables', () => {
