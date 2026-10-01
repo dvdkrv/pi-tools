@@ -1,11 +1,11 @@
-import { basename } from "node:path";
 import type { HostSnapshot } from "./host.ts";
 import { renderHostPanel, renderHostStrip } from "./host-view.ts";
 import type { DashModel, DashRow, SessionEntry } from "./model.ts";
-import { allRows, lastActivity } from "./model.ts";
+import { allRows, isIdle, lastActivity } from "./model.ts";
 import type { Color, Style } from "./text.ts";
 import { fit, formatAge, oneLine, sanitize, truncate, visibleWidth } from "./text.ts";
 import { modelShortName } from "../children/format.ts";
+import { sessionDisplayName, stripMarkdown } from "../display.ts";
 import type { ChildRun } from "../types.ts";
 
 export type ViewState = { selected: string | null; filter: string; editing: boolean; message: string; refreshedAt?: Date; stale?: boolean };
@@ -24,7 +24,7 @@ const WIDE_BODY = 100;
 
 function rowHints(row: DashRow | undefined): string[] {
 	if (!row) return [];
-	if (row.kind === "ended") return [];
+	if (row.kind === "ended" || row.kind === "older") return [];
 	if (row.kind === "triage") return ["enter triage"];
 	if (row.kind === "job" || row.kind === "alert") return row.job.stoppedAt ? ["enter details", "D delete"] : ["enter details", "c check", "x stop"];
 	const session = row.session;
@@ -42,6 +42,7 @@ const indentWidth = (row: DashRow): number => ((row.kind === "session" || row.ki
 
 export function sessionLabel(session: SessionEntry): string {
 	if (session.liveness !== "live") return session.liveness;
+	if (isIdle(session)) return "idle";
 	return session.status === "waiting-external" ? "waiting" : session.status;
 }
 
@@ -54,6 +55,7 @@ function childRunNote(run: ChildRun): string {
 
 export function rowCells(row: DashRow, now: Date, wide: boolean): Cells {
 	if (row.kind === "ended") return { label: "ended", window: "", item: "", age: "", note: `+${row.count} ended child session${row.count === 1 ? "" : "s"}` };
+	if (row.kind === "older") return { label: "", window: "", item: "", age: "", note: `+${row.count} older` };
 	if (row.kind === "triage") return { label: "triage", window: "", item: "", age: "", note: `${row.count} pending candidate${row.count === 1 ? "" : "s"}` };
 	if (row.kind === "job" || row.kind === "alert") {
 		const job = row.job;
@@ -69,9 +71,10 @@ export function rowCells(row: DashRow, now: Date, wide: boolean): Cells {
 	const s = row.session;
 	const child = s.parentSession !== null;
 	const since = child || s.liveness !== "live" ? lastActivity(s) : s.statusAt;
-	const window = s.run ? s.run.id : child ? (s.name ?? `child ${s.id.slice(0, 8)}`) : (s.tmuxWindow ?? basename(s.cwd));
+	const window = s.run ? s.run.id : child ? (s.name ?? `child ${s.id.slice(0, 8)}`) : sessionDisplayName(s.tmuxWindow, s.repo ?? null, s.cwd);
 	const item = s.itemId ? (wide && s.itemTitle ? `${s.itemId} ${s.itemTitle}` : s.itemId) : "-";
-	const note = s.run ? childRunNote(s.run) : s.note ? `"${s.note}"` : child ? "" : (s.name ?? "");
+	const text = isIdle(s) ? "" : oneLine(stripMarkdown(s.note));
+	const note = s.run ? childRunNote(s.run) : text ? `"${text}"` : child ? "" : (s.name ?? "");
 	return { label: sessionLabel(s), window: oneLine(window), item: oneLine(item), age: formatAge(now.getTime() - Date.parse(since)), note: oneLine(note) };
 }
 
@@ -81,9 +84,11 @@ export function rowMatches(row: DashRow, filter: string, now: Date): boolean {
 	return [cells.label, cells.window, cells.item, cells.note].join(" ").toLowerCase().includes(filter.toLowerCase());
 }
 
+// A filter searches the rows behind "+N older" too, so old sessions stay reachable.
 export function filterModel(model: DashModel, filter: string): DashModel {
 	if (!filter) return model;
-	return { ...model, sections: model.sections.map((section) => ({ ...section, rows: section.rows.filter((row) => rowMatches(row, filter, model.now)) })) };
+	const unfold = (rows: readonly DashRow[]): DashRow[] => rows.flatMap((row) => (row.kind === "older" ? (model.older ?? []) : [row]));
+	return { ...model, sections: model.sections.map((section) => ({ ...section, rows: unfold(section.rows).filter((row) => rowMatches(row, filter, model.now)) })) };
 }
 
 function widths(rows: readonly DashRow[], now: Date, wide: boolean, caps: Caps): Widths {
@@ -95,10 +100,10 @@ function widths(rows: readonly DashRow[], now: Date, wide: boolean, caps: Caps):
 
 function rowText(row: DashRow, now: Date, wide: boolean, w: Widths, width: number): string {
 	const cells = rowCells(row, now, wide);
-	if (row.kind === "triage" || row.kind === "ended") return truncate(`${fit(cells.label, LABEL_WIDTH)}${GAP}${" ".repeat(indentWidth(row))}${cells.note}`, width);
+	if (row.kind === "triage") return truncate(`${fit(cells.label, LABEL_WIDTH)}${GAP}${cells.note}`, width);
 	const window = `${" ".repeat(indentWidth(row))}${cells.window}`;
 	const head = [fit(cells.label, LABEL_WIDTH), fit(window, w.window), fit(cells.item, w.item), cells.age.padStart(w.age)].join(GAP);
-	return truncate(`${head}${GAP}${cells.note}`, width);
+	return truncate(`${head}${GAP}${cells.note}`.trimEnd(), width);
 }
 
 // The label is the first word of a plain row, so styling it never splits an escape sequence.
@@ -113,6 +118,7 @@ function styleRow(row: DashRow, line: string, style: Style): string {
 		if (row.job.stoppedAt) return style.dim(line);
 		return row.job.lastCheckStatus === "unhealthy" ? style.color("red", line) : line;
 	}
+	if (row.kind === "older") return style.dim(line);
 	if (row.kind !== "session") return line;
 	const session = row.session;
 	if (session.liveness === "crashed") return style.color("red", line);
@@ -142,7 +148,7 @@ export function renderDash(model: DashModel, state: ViewState, width: number, he
 	let selectedLine = -1;
 	for (const section of shown.sections) {
 		if (section.rows.length === 0) continue;
-		const rootCount = section.rows.filter((row) => (row.kind !== "session" && row.kind !== "ended") || row.depth === 0).length;
+		const rootCount = section.rows.filter((row) => row.kind !== "older" && ((row.kind !== "session" && row.kind !== "ended") || row.depth === 0)).length;
 		const count = rootCount || section.rows.length;
 		body.push(style.bold(truncate(`${section.title} (${count})`, leftWidth)));
 		for (const row of section.rows) {

@@ -11,12 +11,12 @@ const start = (overrides = {}) => ({
   id: 's1', file: '/s/s1.jsonl', cwd: '/src/api', name: null, pid: 101, tmuxPane: '%3', tmuxWindow: 'api', parentSession: null, headless: false, ...overrides,
 });
 
-test('a new session starts as needs-me with an automatic note and writes no events', async () => {
+test('a new session starts as needs-me with no note and writes no events', async () => {
   const store = await memoryStore();
   const session = store.startSession(start());
   assert.equal(session.status, 'needs-me');
   assert.equal(session.statusSource, 'auto');
-  assert.equal(session.note, 'new session');
+  assert.equal(session.note, '');
   assert.equal(session.statusAt, '2026-09-25T09:00:00.000Z');
   assert.equal(session.endedAt, null);
   assert.equal(session.parentSession, null);

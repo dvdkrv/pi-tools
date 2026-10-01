@@ -62,13 +62,13 @@ async function fixture({ restored = true } = {}) {
   return { rt, store };
 }
 
-function open(rt, { insideTmux = true, kills = [], run = async () => ({ code: 0, output: 'ok', timedOut: false }), host = null, columns } = {}) {
+function open(rt, { insideTmux = true, kills = [], run = async () => ({ code: 0, output: 'ok', timedOut: false }), host = null, columns, git } = {}) {
   const terminal = fakeTerminal(columns);
   const calls = [];
   const ran = [];
   const result = runDash({
     runtime: rt, terminal, tmux: tmuxFake(calls), insideTmux, readers: alive(11, 13), style: plainStyle, refreshMs: 0,
-    bootId: () => 'boot-1', fileExists: () => true, kill: (pid, signal) => kills.push([pid, signal]), host,
+    bootId: () => 'boot-1', fileExists: () => true, kill: (pid, signal) => kills.push([pid, signal]), host, git,
     jobs: { run: async (command, ...rest) => { ran.push(command); return run(command, ...rest); }, pidAlive: () => true },
   });
   return { terminal, calls, result, kills, ran };
@@ -82,13 +82,27 @@ test('the dashboard shows parents with their children and jumps to a live sessio
   assert.match(screen[0], TITLE);
   assert.equal(screen[1], 'Decisions (1)');
   assert.match(screen[2], /^> needs-me\s+sap-rfc\s+-\s+0s\s+"Trim the overview\?"$/);
-  assert.match(screen[3], /^ {2}needs-me\s+impl-parser\s+-\s+0s\s+"new session"$/);
+  assert.match(screen[3], /^ {2}idle\s+impl-parser\s+-\s+0s$/);
   assert.ok(screen.includes('Other sessions (1)'));
   assert.match(screen.find((line) => line.includes('crashed')), /infra/);
   d.terminal.send('\r');
   assert.deepEqual(await d.result, {});
   assert.deepEqual(actions(d.calls), [['switch-client', '-t', '%1'], ['select-window', '-t', '%1'], ['select-pane', '-t', '%1']]);
   assert.equal(d.terminal.stopped, true);
+});
+
+test('repository names are cached across dashboard reloads', async () => {
+  const { rt, store } = await fixture();
+  store.updateSession('live-1', { tmuxWindow: 'pi' });
+  const calls = [];
+  const d = open(rt, { git: (cwd) => { calls.push(cwd); return `${cwd}/.git`; } });
+  assert.match(d.terminal.screen()[2], /needs-me\s+sap\s+-/);
+  const first = calls.length;
+  d.terminal.send('R');
+  await tick();
+  assert.equal(calls.length, first);
+  d.terminal.send('q');
+  await d.result;
 });
 
 test('outside tmux, Enter prints the tmux command instead', async () => {
@@ -220,9 +234,14 @@ test('? shows the help and any key returns', async () => {
   await d.result;
 });
 
-test('the triage line opens triage, and dismissing the last candidate returns to the dashboard', async () => {
+test('the triage line is opt-in, then opens triage and returns after dismissing the last candidate', async () => {
   const { rt, store } = await fixture();
   store.addCandidate({ kind: 'new-item', source: 'github', dedupeKey: 'k1', title: 'Review example-org/api#9', reason: 'Review requested' }, 'sync:github');
+  const hidden = open(rt);
+  assert.equal(hidden.terminal.screen().some((line) => line.includes('pending candidate')), false);
+  hidden.terminal.send('q');
+  await hidden.result;
+  rt.config.dashboard = { showTriage: true };
   const d = open(rt);
   assert.ok(d.terminal.screen().includes('  triage     1 pending candidate'));
   d.terminal.send('j', 'j', '\r');

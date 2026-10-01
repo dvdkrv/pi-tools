@@ -780,7 +780,7 @@ export class WorkStore {
 			} else {
 				this.run(
 					`INSERT INTO session (id, file, cwd, name, pid, tmux_pane, tmux_window, parent_session, headless, started_at, status, note, status_source, status_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'needs-me', 'new session', 'auto', ?)`,
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'needs-me', '', 'auto', ?)`,
 					input.id, input.file, input.cwd, input.name, input.pid, input.tmuxPane, input.tmuxWindow, input.parentSession, input.headless ? 1 : 0, now, now,
 				);
 			}

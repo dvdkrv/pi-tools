@@ -6,6 +6,8 @@ import type { PidReaders } from "../liveness.ts";
 import type { TmuxRunner } from "../planner.ts";
 import { shellQuote } from "../planner.ts";
 import { reopenSession, runRestore, selectForRestore } from "../restore.ts";
+import type { GitRunner } from "../rules.ts";
+import { defaultGit, repoFromCwd } from "../rules.ts";
 import type { Runtime } from "../runtime.ts";
 import { errorMessage } from "../secrets.ts";
 import type { TmuxPane } from "../tmux.ts";
@@ -44,6 +46,8 @@ export type DashDeps = {
 	jobs?: JobDeps;
 	// undefined collects host metrics with collectHost; null turns the host panel off.
 	host?: ((prev: HostSample | undefined) => Promise<HostSnapshot>) | null;
+	// Finds the repository that names a session whose tmux window has a default name.
+	git?: GitRunner;
 };
 export type DashResult = { print?: string };
 type TriageState = { candidates: Candidate[]; index: number; keys: KeyState };
@@ -117,14 +121,21 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		resolveRun = resolve;
 	});
 
+	// git is slow and a cwd's repository does not change, so each cwd is asked once per dashboard.
+	const repos = new Map<string, string | null>();
+	const repoOf = (cwd: string): string | null => {
+		if (!repos.has(cwd)) repos.set(cwd, repoFromCwd(cwd, deps.git ?? defaultGit) ?? null);
+		return repos.get(cwd) ?? null;
+	};
 	const visibleRows = (): DashRow[] => allRows(filterModel(model, keys.filter));
 	const selectedRow = (): DashRow | undefined => visibleRows().find((row) => row.key === selected);
 	const sessionOf = (row: DashRow | undefined): SessionEntry | undefined => (row?.kind === "session" ? row.session : undefined);
 
 	function reload(): void {
 		panes = listPanes(deps.tmux);
-		sessions = loadSessions(store, panes, deps.readers);
-		model = buildDashModel({ sessions, triageCount: openCandidates(store).length, jobs: store.listJobs(), now: store.clock() });
+		sessions = loadSessions(store, panes, deps.readers, repoOf);
+		const triageCount = deps.runtime.config.dashboard?.showTriage === true ? openCandidates(store).length : 0;
+		model = buildDashModel({ sessions, triageCount, jobs: store.listJobs(), now: store.clock() });
 		const rows = visibleRows();
 		if (!rows.some((row) => row.key === selected)) selected = rows[0]?.key ?? null;
 		refreshedAt = store.clock();
@@ -327,7 +338,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 			await ask<void>((resolve) => messageBox(`Job ${job.id}`, jobDetails(store, job, store.clock()), resolve));
 			return;
 		}
-		if (row.kind === "ended") return;
+		if (row.kind === "ended" || row.kind === "older") return;
 		const session = row.session;
 		if (session.parentSession || (session.liveness === "live" && !session.tmuxPane)) {
 			await showTranscript(session);

@@ -11,7 +11,7 @@ const { plainStyle, ansiStyle } = await load('src/work/dash/text.ts');
 const NOW = new Date('2026-09-25T09:00:00.000Z');
 const ago = (minutes) => new Date(NOW.getTime() - minutes * 60_000).toISOString();
 const entry = (overrides) => ({
-  id: 'x', file: null, cwd: '/src/x', name: null, pid: 1, tmuxPane: '%1', tmuxWindow: null, startedAt: ago(600), lastTurnAt: null, endedAt: null,
+  id: 'x', file: null, cwd: '/src/x', name: null, pid: 1, tmuxPane: '%1', tmuxWindow: null, startedAt: ago(600), lastTurnAt: ago(10), endedAt: null,
   status: 'working', note: '', statusSource: 'auto', statusAt: ago(0), restoredFrom: null, parentSession: null, headless: false,
   liveness: 'live', alive: true, itemId: null, itemTitle: null, ...overrides,
 });
@@ -22,7 +22,7 @@ const SESSIONS = [
   entry({ id: 'w1', tmuxWindow: 'web', status: 'waiting-external', statusAt: ago(180), note: 'CI run for PR 42', itemId: 'W-3', itemTitle: 'Launch checklist' }),
   entry({ id: 'o1', tmuxWindow: 'docs', status: 'done', statusAt: ago(120), note: 'Published the guide', itemId: 'W-2', itemTitle: 'Docs refresh' }),
   entry({ id: 'o2', tmuxWindow: 'infra', status: 'needs-me', liveness: 'crashed', alive: false, lastTurnAt: ago(1440), note: 'Which region first?' }),
-  entry({ id: 'o3', cwd: '/src/old-tool', liveness: 'closed', alive: false, endedAt: ago(7200), lastTurnAt: ago(7200) }),
+  entry({ id: 'o3', cwd: '/src/old-tool', liveness: 'closed', alive: false, endedAt: ago(1200), lastTurnAt: ago(1200) }),
   entry({ id: 'o4', tmuxWindow: 'ancient', liveness: 'closed', alive: false, endedAt: ago(11520), lastTurnAt: ago(11520) }),
 ];
 const model = () => buildDashModel({ sessions: SESSIONS, triageCount: 3, now: NOW });
@@ -51,8 +51,21 @@ test('sections order sessions, nest children under their parent, and drop old en
   assert.deepEqual(m.sections[1].rows.map((r) => r.key), ['session:w1']);
   assert.deepEqual(m.sections[2].rows, []);
   assert.deepEqual(m.sections[3].rows, []);
-  assert.deepEqual(m.sections[4].rows.map((r) => r.key), ['session:o1', 'session:o2', 'session:o3']);
+  assert.deepEqual(m.sections[4].rows.map((r) => r.key), ['session:o1', 'session:o3', 'session:o2']);
   assert.equal(buildDashModel({ sessions: SESSIONS, triageCount: 0, now: NOW }).sections[0].rows.some((r) => r.kind === 'triage'), false);
+});
+
+test('never-turned automatic sessions leave Decisions and display idle without their legacy note', () => {
+  const sessions = [
+    entry({ id: 'fresh', tmuxWindow: 'pi', lastTurnAt: null, status: 'needs-me', note: '' }),
+    entry({ id: 'legacy', tmuxWindow: 'bash', lastTurnAt: null, status: 'needs-me', note: 'new session' }),
+  ];
+  const m = buildDashModel({ sessions, triageCount: 0, now: NOW });
+  assert.deepEqual(m.sections[0].rows, []);
+  assert.deepEqual(m.sections[4].rows.map((r) => r.key), ['session:fresh', 'session:legacy']);
+  const lines = plain(renderDash(m, state({ selected: null }), 80, 20, plainStyle));
+  assert.ok(lines.some((line) => /^ {2}idle\s+x\s+-\s+0s$/.test(line)), lines.join('\n'));
+  assert.equal(lines.some((line) => line.includes('new session')), false);
 });
 
 test('a live child follows its parent into any section, and a live orphan is listed under Other sessions', () => {
@@ -72,7 +85,7 @@ test('a live child follows its parent into any section, and a live orphan is lis
 
 test('ended children fold under a shown lead after its live children', () => {
   const sessions = [
-    entry({ id: 'p', tmuxWindow: 'api', status: 'working' }),
+    entry({ id: 'p', tmuxWindow: 'api', status: 'working', note: 'marker' }),
     entry({ id: 'live-1', parentSession: 'p', headless: true, tmuxPane: null }),
     entry({ id: 'ended-1', parentSession: 'p', headless: true, tmuxPane: null, liveness: 'closed', alive: false }),
     entry({ id: 'live-2', parentSession: 'p', headless: true, tmuxPane: null }),
@@ -86,8 +99,14 @@ test('ended children fold under a shown lead after its live children', () => {
     ['session', 'session:live-2', 1, undefined],
     ['ended', 'ended:p', 1, 3],
   ]);
+  for (const width of [80, 120]) {
+    const frame = plain(renderDash(m, state({ selected: null }), width, 24, plainStyle));
+    const parent = frame.find((line) => line.includes('"marker"'));
+    const fold = frame.find((line) => line.includes('+3 ended child sessions'));
+    assert.equal(fold.indexOf('+3 ended child sessions'), parent.indexOf('"marker"'), frame.join('\n'));
+  }
   const lines = plain(renderDash(m, state({ selected: 'ended:p', filter: 'child sessions' }), 80, 24, plainStyle));
-  assert.deepEqual(lines, ['Work dashboard  /child sessions', 'Working (1)', '> ended        +3 ended child sessions', TAIL, '']);
+  assert.equal(lines.find((line) => line.startsWith('> ')), '> ended                              +3 ended child sessions');
 });
 
 test('ended orphans from different missing leads share one fold while live orphans stay listed', () => {
@@ -103,6 +122,43 @@ test('ended orphans from different missing leads share one fold while live orpha
   ]);
 });
 
+test('Other sessions folds top-level sessions older than 24 hours but a filter reveals them', () => {
+  const m = buildDashModel({
+    now: NOW,
+    triageCount: 0,
+    sessions: [
+      entry({ id: 'recent', tmuxWindow: 'recent', liveness: 'closed', alive: false, lastTurnAt: ago(60), note: 'marker' }),
+      entry({ id: 'old', tmuxWindow: 'old-api', liveness: 'closed', alive: false, lastTurnAt: ago(1500) }),
+      entry({ id: 'old-child', parentSession: 'old', headless: true, tmuxPane: null, liveness: 'closed', alive: false, lastTurnAt: ago(1490) }),
+      entry({ id: 'live-old', tmuxWindow: 'still-live', status: 'done', lastTurnAt: ago(3000) }),
+    ],
+  });
+  assert.deepEqual(m.sections[4].rows.map((r) => [r.kind, r.key, r.count]), [
+    ['session', 'session:live-old', undefined],
+    ['session', 'session:recent', undefined],
+    ['older', 'older', 1],
+  ]);
+  for (const width of [80, 120]) {
+    const lines = plain(renderDash(m, state({ selected: null }), width, 20, plainStyle));
+    const recent = lines.find((line) => line.includes('recent'));
+    const fold = lines.find((line) => line.includes('+1 older'));
+    assert.equal(fold.indexOf('+1 older'), recent.indexOf('"marker"'), lines.join('\n'));
+  }
+  const filtered = plain(renderDash(m, state({ selected: null, filter: 'old-api' }), 80, 20, plainStyle));
+  assert.ok(filtered.some((line) => line.includes('old-api')), filtered.join('\n'));
+  assert.equal(filtered.some((line) => line.includes('+1 older')), false);
+});
+
+test('top-level rows prefer repository names for default windows and strip Markdown from notes', () => {
+  const m = buildDashModel({
+    now: NOW,
+    triageCount: 0,
+    sessions: [entry({ id: 'repo', tmuxWindow: 'pi', repo: 'payments-api', status: 'needs-me', note: '**Merge** [PR 12](https://x/12)?' })],
+  });
+  const line = plain(renderDash(m, state({ selected: null }), 100, 20, plainStyle))[2];
+  assert.match(line, /needs-me\s+payments-api\s+-\s+0s\s+"Merge PR 12\?"$/);
+});
+
 test('an 80-column frame', () => {
   assert.deepEqual(plain(renderDash(model(), state(), 80, 24, plainStyle)), [
     'Work dashboard',
@@ -115,8 +171,8 @@ test('an 80-column frame', () => {
     '  waiting    web           W-3   3h  "CI run for PR 42"',
     'Other sessions (3)',
     '  done       docs          W-2   2h  "Published the guide"',
+    '  closed     old-tool      -    20h',
     '  crashed    infra         -    24h  "Which region first?"',
-    '  closed     old-tool      -     5d',
     LIVE_HINTS,
     '',
   ]);
@@ -134,8 +190,8 @@ test('a 160-column frame shows item titles', () => {
     '  waiting    web           W-3 Launch checklist             3h  "CI run for PR 42"',
     'Other sessions (3)',
     '  done       docs          W-2 Docs refresh                 2h  "Published the guide"',
+    '  closed     old-tool      -                               20h',
     '  crashed    infra         -                               24h  "Which region first?"',
-    '  closed     old-tool      -                                5d',
     LIVE_HINTS,
     '',
   ]);
@@ -146,7 +202,7 @@ test('with a host, a wide frame adds the side panel and a narrow one a strip und
   assert.equal(wide[0], 'Work dashboard · devbox');
   assert.equal(wide[1], 'Decisions (3)'.padEnd(105) + ' │ Host   up 172d · 16 cpu · load 4.52 3.91 4.02');
   assert.match(wide[2], /^> needs-me {3}sap-rfc .* {2}│ CPU {4}28% {2}▃▁▁▂▁▁█▁▁▁▁▂▁▁▁▁$/);
-  assert.equal(wide.at(-3), '  closed     old-tool      -                                5d'.padEnd(105) + ' │ Orphan ssh 2');
+  assert.equal(wide.at(-3), '  crashed    infra         -                               24h  "Which region first?"'.padEnd(105) + ' │ Orphan ssh 2');
   assert.ok(wide.some((line) => line.includes('│ Pi     11 processes · 5 live sessions')));
   assert.equal(wide.at(-2), LIVE_HINTS);
   const short = plain(renderDash(model(), state(), 160, 24, plainStyle, { ...HOST, topCpu: [], topMemory: [], orphans: [] }));
@@ -162,7 +218,7 @@ test('with a host, a wide frame adds the side panel and a narrow one a strip und
 test('ANSI styling highlights the selection, colors crashed rows, and colors only a status word', () => {
   const lines = renderDash(model(), state(), 80, 24, ansiStyle);
   assert.ok(lines[2].startsWith('\x1b[7m> needs-me'));
-  assert.ok(lines[10].startsWith('\x1b[31m  crashed'));
+  assert.ok(lines[11].startsWith('\x1b[31m  crashed'));
   assert.equal(lines[3], '  \x1b[33mneeds-me\x1b[39m     impl-auth   -     3m  "Which test runner?"');
   assert.equal(lines[7], '  \x1b[36mwaiting\x1b[39m    web           W-3   3h  "CI run for PR 42"');
   assert.ok(lines.every((line) => !line.includes('\n')));
@@ -197,9 +253,9 @@ test('the filter hides non-matching rows, matches item titles at any width, and 
 test('scrolling keeps the selected row visible, and the message line is last', () => {
   assert.deepEqual(plain(renderDash(model(), state({ selected: 'session:o3', message: 'Refreshed' }), 80, 6, plainStyle)), [
     'Work dashboard',
+    'Other sessions (3)',
     '  done       docs          W-2   2h  "Published the guide"',
-    '  crashed    infra         -    24h  "Which region first?"',
-    '> closed     old-tool      -     5d',
+    '> closed     old-tool      -    20h',
     ENDED_HINTS,
     'Refreshed',
   ]);

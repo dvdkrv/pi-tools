@@ -45,6 +45,17 @@ test('invalid sections are dropped individually', () => {
   assert.equal(warnings.length, 4);
 });
 
+test('dashboard triage defaults off and validates its boolean setting', () => {
+  assert.equal(parseWorkConfig('{}').config.dashboard, undefined);
+  assert.deepEqual(parseWorkConfig('{"dashboard":{"showTriage":true}}').config.dashboard, { showTriage: true });
+  const badSection = parseWorkConfig('{"dashboard":[]}');
+  assert.equal(badSection.config.dashboard, undefined);
+  assert.deepEqual(badSection.warnings, ['dashboard must be an object; using the defaults']);
+  const badValue = parseWorkConfig('{"dashboard":{"showTriage":"yes"}}');
+  assert.deepEqual(badValue.config.dashboard, { showTriage: false });
+  assert.deepEqual(badValue.warnings, ['dashboard.showTriage must be true or false; using false']);
+});
+
 test('default paths follow XDG variables', () => {
   assert.equal(defaultConfigPath({ XDG_CONFIG_HOME: '/x/config' }, '/h'), '/x/config/work/config.json');
   assert.equal(defaultConfigPath({}, '/h'), '/h/.config/work/config.json');

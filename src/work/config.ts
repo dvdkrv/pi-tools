@@ -8,7 +8,8 @@ export type JiraConfig = { site: string; email: string; secretCommand: string[];
 export type GithubAccount = { user: string; orgs: string[] };
 export type ProjectConfig = { slug: string; title: string; jiraEpic?: string; notesPath?: string };
 export type Rule = { project: string; repo?: string; jiraEpic?: string; jiraProject?: string };
-export type WorkConfig = { jira?: JiraConfig; github: { accounts: GithubAccount[] }; projects: ProjectConfig[]; rules: Rule[]; plannerCwd?: string; usage?: boolean; children?: ChildrenConfig; bashTimeoutMinutes?: number };
+export type DashboardConfig = { showTriage: boolean };
+export type WorkConfig = { jira?: JiraConfig; github: { accounts: GithubAccount[] }; projects: ProjectConfig[]; rules: Rule[]; plannerCwd?: string; usage?: boolean; children?: ChildrenConfig; dashboard?: DashboardConfig; bashTimeoutMinutes?: number };
 export type LoadedConfig = { config: WorkConfig; warnings: string[] };
 export type RepoChildrenConfig = { ignore: string[]; expensiveCommands: string[] };
 export type DiffBudgetConfig = { defaultLines: number; defaultFiles: number; maxLines: number; prLines: number };
@@ -250,6 +251,15 @@ export function parseWorkConfig(raw: string): LoadedConfig {
 	if (data.usage !== undefined) {
 		if (typeof data.usage === "boolean") config.usage = data.usage;
 		else warnings.push("usage must be true or false; usage tracking stays on");
+	}
+	if (data.dashboard !== undefined) {
+		if (!isRecord(data.dashboard)) warnings.push("dashboard must be an object; using the defaults");
+		else if (data.dashboard.showTriage === undefined || typeof data.dashboard.showTriage === "boolean") {
+			config.dashboard = { showTriage: data.dashboard.showTriage === true };
+		} else {
+			config.dashboard = { showTriage: false };
+			warnings.push("dashboard.showTriage must be true or false; using false");
+		}
 	}
 	if (data.bashTimeoutMinutes !== undefined) {
 		const minutes = data.bashTimeoutMinutes;
