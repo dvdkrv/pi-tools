@@ -121,7 +121,7 @@ test('native slash completion lists subcommands with hints and replaces the full
   const provider = new CombinedAutocompleteProvider([{ name: 'messages', ...command }], '/tmp');
   const options = { signal: new AbortController().signal };
   const menu = await provider.getSuggestions(['/messages '], 0, '/messages '.length, options);
-  assert.deepEqual(menu.items.map(i => i.value.trim()).sort(), ['arm', 'inbox', 'join', 'leave', 'pause', 'prune', 'revoke', 'routes', 'send', 'status']);
+  assert.deepEqual(menu.items.map(i => i.value.trim()).sort(), ['arm', 'inbox', 'join', 'leave', 'pause', 'prune', 'resume', 'revoke', 'routes', 'send', 'status']);
   assert.ok(menu.items.every(i => i.description));
   assert.match(menu.items.find(i => i.value.trim() === 'join').label, /group/i);
   assert.match(menu.items.find(i => i.value.trim() === 'arm').label, /1.*100/);
@@ -202,7 +202,7 @@ test('command retries readiness before backend connection', async t => {
 test('non-TUI controls fail before readiness or connection', async t => {
   const f = fixture(t);
   for (const mode of ['rpc', 'json', 'print']) await assert.rejects(f.commands.get('messages').handler('join review', { ...f.ctx, mode }), /TUI/i);
-  await assert.rejects(execute(f, 'send', { kind: 'notice', toPeerId: f.other.id, text: 'x' }), /join/i);
+  await assert.rejects(execute(f, 'send', { kind: 'notice', toPeerId: f.other.id, text: 'x' }), /not active/i);
   assert.equal(f.ensureCalls.length, 0); assert.equal(f.connectCalls.length, 0);
 });
 
@@ -227,7 +227,7 @@ test('tree navigation suspends participation and explicit rejoin resumes the sam
   const groupBefore = { ...f.state.groups[f.group.id] };
   await f.events.get('session_before_tree')({}, f.ctx);
   assert.equal(f.backend.peer, undefined); assert.equal(f.state.peers[oldId].active, true); assert.equal(f.state.peers[oldId].suspended, true);
-  await assert.rejects(execute(f, 'status'), /join/i);
+  await assert.rejects(execute(f, 'status'), /not active/i);
   await f.commands.get('messages').handler('join review', f.ctx);
   assert.equal(f.backend.peer.id, oldId); assert.equal(f.backend.peer.suspended, false);
   assert.deepEqual(f.state.groups[f.group.id], groupBefore);
@@ -249,7 +249,7 @@ test('failed suspension closes local state without reinterpreting it as final le
   f.backend.suspend = async () => { f.lifecycle.suspends++; throw new Error('uncertain suspension'); };
   await assert.rejects(f.events.get('session_before_tree')({}, f.ctx), /uncertain suspension/);
   assert.equal(f.backend.closed, true); assert.equal(f.state.peers[id].active, true); assert.equal(f.lifecycle.leaves, 0);
-  await assert.rejects(execute(f, 'status'), /join/i);
+  await assert.rejects(execute(f, 'status'), /not active/i);
 });
 
 test('repeated same-group join is an informational no-op while cross-group join requires final leave', async t => {
@@ -392,56 +392,22 @@ test('peer selection shows role and session ID without conflating identical labe
   assert.equal(Object.values(f.state.messages)[0].recipientPeerId, second.id);
 });
 
-test('role rename changes only self while discovery retains session and routing IDs', async t => {
-  const f = fixture(t); await f.commands.get('messages').handler('join review', f.ctx); p.arm(f.state, f.group, 1);
-  const before = { ...f.backend.peer }; const groupBefore = { ...f.state.groups[f.group.id] };
-  const queued = p.prepareMessage(f.state, p.leaseOf(f.other), { kind: 'notice', toPeerId: before.id, text: 'PRIVATE_BODY' }, 'incoming');
-  const result = JSON.parse((await execute(f, 'rename', { displayName: '  test-reviewer  ' })).content[0].text);
-  assert.deepEqual(result, { id: before.id, sessionId: 'local', displayName: 'test-reviewer' });
-  assert.equal(f.backend.peer.displayName, 'test-reviewer'); assert.equal(f.other.displayName, 'Other');
-  await f.events.get('session_info_changed')?.({ name: 'Unrelated title' }, f.ctx);
-  assert.equal(f.backend.peer.displayName, 'test-reviewer');
-  assert.equal(queued.recipientPeerId, before.id); assert.equal(queued.state, 'queued');
-  assert.deepEqual(f.state.groups[f.group.id], groupBefore);
-  const discovery = JSON.parse((await execute(f, 'peers')).content[0].text);
-  assert.equal(discovery.selfId, before.id); assert.equal(discovery.selfSessionId, 'local');
-  assert.deepEqual(discovery.peers.find(p => p.id === before.id), { id: before.id, sessionId: 'local', displayName: 'test-reviewer', presence: 'online', sendMode: 'closed' });
-  assert.equal(discovery.peers.find(p => p.id === f.other.id).sessionId, 'other');
-  assert.equal(JSON.stringify(discovery).includes('PRIVATE_BODY'), false); assert.equal(f.delivered.length, 0);
-  await f.commands.get('messages').handler('leave', f.ctx);
+test('rename is absent from the tool contract and rejected without mutation', async t => {
+  const f = fixture(t); const tool = f.tools.get('peer_message');
+  assert.equal(tool.parameters.properties.action.enum.includes('rename'), false);
+  assert.equal(Object.hasOwn(tool.parameters.properties, 'displayName'), false);
   await f.commands.get('messages').handler('join review', f.ctx);
-  assert.notEqual(f.backend.peer.id, before.id); assert.equal(f.backend.peer.sessionId, before.sessionId);
-  assert.equal(f.backend.peer.displayName, 'local'); assert.equal(queued.recipientPeerId, before.id);
-});
-
-test('rename rejects administrative targets, invalid names, and unjoined or non-TUI callers', async t => {
-  const f = fixture(t);
-  await assert.rejects(execute(f, 'rename', { displayName: 'reviewer' }), /join/i);
-  assert.equal(f.connectCalls.length, 0);
-  await f.commands.get('messages').handler('join review', f.ctx);
-  for (const displayName of [undefined, 123, '', ' ', 'x'.repeat(65), 'review\nlead', '\x1b[31mreview', '\u202elead']) {
-    await assert.rejects(execute(f, 'rename', { displayName }), /display.?name|rename/i);
-  }
-  for (const fields of [{ kind: 'notice', toPeerId: f.other.id }, { text: 'unused' }, { inReplyTo: randomUUID() }]) {
-    await assert.rejects(execute(f, 'rename', { displayName: 'reviewer', ...fields }), /rename|only/i);
-  }
-  for (const mode of ['rpc', 'json', 'print']) {
-    await assert.rejects(f.tools.get('peer_message').execute('rename', { action: 'rename', displayName: 'reviewer' }, undefined, undefined, { ...f.ctx, mode }), /TUI/i);
-  }
+  await assert.rejects(execute(f, 'rename', { displayName: 'reviewer' }), /unknown.*action/i);
   assert.equal(f.backend.peer.displayName, 'local'); assert.equal(f.other.displayName, 'Other');
-  await execute(f, 'rename', { displayName: '🧪'.repeat(64) });
-  assert.equal(f.backend.peer.displayName, '🧪'.repeat(64));
 });
 
 test('real Pi argument pipeline accepts captured-style padding without changing input or sending extra work', async t => {
   const f = fixture(t); await f.commands.get('messages').handler('join review', f.ctx); p.arm(f.state, f.group, 2);
   const tool = f.tools.get('peer_message');
   const calls = [
-    { action: 'peers', displayName: 'test-crawler', toPeerId: '', text: '', inReplyTo: '', beforeSequence: 1 },
-    { action: 'rename', displayName: 'test-crawler', toPeerId: '', text: '', inReplyTo: '', beforeSequence: 1 },
-    { action: 'send', kind: 'notice', displayName: 'not-a-rename', toPeerId: f.other.id, text: '  exact body\n', inReplyTo: '', beforeSequence: 1 },
-    { action: 'send', kind: 'notice', displayName: null, toPeerId: f.other.id, text: 'second body', inReplyTo: null, beforeSequence: null },
-    { action: 'rename', displayName: null },
+    { action: 'peers', toPeerId: '', text: '', inReplyTo: '', beforeSequence: 1 },
+    { action: 'send', kind: 'notice', toPeerId: f.other.id, text: '  exact body\n', inReplyTo: '', beforeSequence: 1 },
+    { action: 'send', kind: 'notice', toPeerId: f.other.id, text: 'second body', inReplyTo: null, beforeSequence: null },
     { action: 'send', kind: 'notice', toPeerId: f.other.id, text: null },
   ];
   const original = structuredClone(calls); let requests = 0;
@@ -451,7 +417,7 @@ test('real Pi argument pipeline accepts captured-style padding without changing 
       tools: [wrapToolDefinition(tool, () => f.ctx)] },
     streamFn: () => {
       assert.ok(requests <= calls.length, 'Scripted provider must stay bounded');
-      if (requests === 3) {
+      if (requests === 2) {
         const first = Object.values(f.state.messages)[0];
         p.resolveMessage(f.state, f.group, first.id, 'canceled');
       }
@@ -464,23 +430,20 @@ test('real Pi argument pipeline accepts captured-style padding without changing 
   });
   t.after(() => agent.abort()); await agent.prompt('Exercise the isolated messaging fixture');
   const results = agent.state.messages.filter(m => m.role === 'toolResult');
-  assert.equal(results.length, 6);
+  assert.equal(results.length, 4);
   const listed = JSON.parse(results[0].content[0].text);
   assert.equal(listed.peers.find(peer => peer.id === listed.selfId).displayName, 'local');
-  assert.ok(results.slice(0, 4).every(m => !m.isError), JSON.stringify(results.map(m => m.content)));
-  assert.ok(results.slice(4).every(m => m.isError), 'Required nulls must not be coerced into a literal name/body "null"');
-  assert.deepEqual(calls, original); assert.equal(f.backend.peer.displayName, 'test-crawler'); assert.equal(f.other.displayName, 'Other');
+  assert.ok(results.slice(0, 3).every(m => !m.isError), JSON.stringify(results.map(m => m.content)));
+  assert.ok(results[3].isError, 'A required null body must not be coerced into the literal "null"');
+  assert.deepEqual(calls, original); assert.equal(f.backend.peer.displayName, 'local'); assert.equal(f.other.displayName, 'Other');
   const messages = Object.values(f.state.messages);
   assert.equal(messages.length, 2); assert.ok(messages.every(m => m.recipientPeerId === f.other.id && m.inReplyTo === undefined));
   assert.equal((await f.backend.readBody(f.group, messages[0].id)).text, '  exact body\n');
-  assert.equal(f.state.groups[f.group.id].used, 0); assert.equal(f.delivered.length, 0); assert.equal(requests, 7);
+  assert.equal(f.state.groups[f.group.id].used, 0); assert.equal(f.delivered.length, 0); assert.equal(requests, 5);
 });
 
 test('direct execution normalizes neutral padding but preserves real reply references and status cursors', async t => {
   const f = fixture(t); await f.commands.get('messages').handler('join review', f.ctx); p.arm(f.state, f.group, 2);
-  for (const empty of ['', null, undefined]) {
-    await execute(f, 'rename', { displayName: 'test-reviewer', toPeerId: empty, text: empty, inReplyTo: empty, beforeSequence: 1 });
-  }
   const base = Date.now();
   const incoming = p.prepareMessage(f.state, p.leaseOf(f.other), { kind: 'request', toPeerId: f.backend.peer.id, text: 'one' }, 'incoming-request', base);
   const admitted = p.admit(f.state, p.leaseOf(f.state.peers[f.backend.peer.id]), incoming.id, base + 1);
@@ -488,7 +451,7 @@ test('direct execution normalizes neutral padding but preserves real reply refer
   await execute(f, 'send', { kind: 'reply', toPeerId: f.other.id, text: 'reply', inReplyTo: incoming.id });
   assert.equal(Object.values(f.state.messages)[1].inReplyTo, incoming.id);
   const tool = f.tools.get('peer_message'); assert.equal(typeof tool.prepareArguments, 'function');
-  const statusArgs = tool.prepareArguments({ action: 'status', displayName: '', toPeerId: '', text: '', inReplyTo: '', beforeSequence: 1 });
+  const statusArgs = tool.prepareArguments({ action: 'status', toPeerId: '', text: '', inReplyTo: '', beforeSequence: 1 });
   assert.equal(statusArgs.beforeSequence, 1);
   const status = JSON.parse((await tool.execute('status', statusArgs, undefined, undefined, f.ctx)).content[0].text);
   assert.equal(status.outgoing.length, 0);
@@ -531,33 +494,6 @@ test('send validation identifies the bad ID field rather than blaming a valid re
   await assert.rejects(execute(f, 'send', { kind: 'reply', toPeerId: f.other.id, text: 'body', inReplyTo: 'not-a-message-id' }), /inReplyTo/);
   await assert.rejects(execute(f, 'send', { kind: 'notice', toPeerId: 'not-a-peer-id', text: 'body' }), /toPeerId/);
   assert.equal(Object.keys(f.state.messages).length, 0); assert.equal(f.state.groups[f.group.id].used, 0);
-});
-
-test('concurrent self-renames are rejected instead of racing the local name cache', async t => {
-  const f = fixture(t); await f.commands.get('messages').handler('join review', f.ctx);
-  assert.ok(f.tools.get('peer_message').parameters.properties.action.enum.includes('rename'));
-  let release; let started; const ready = new Promise(r => { started = r; });
-  const barrier = new Promise(r => { release = r; }); const self = f.backend.peer;
-  f.backend.heartbeat = async name => { started(); await barrier; const stored = f.state.peers[self.id]; p.heartbeat(f.state, p.leaseOf(stored), name); Object.assign(self, p.publicPeer(stored)); };
-  const first = execute(f, 'rename', { displayName: 'first-reviewer' }); await ready;
-  await assert.rejects(execute(f, 'rename', { displayName: 'second-reviewer' }), /busy|progress/i);
-  release(); await first; assert.equal(f.backend.peer.displayName, 'first-reviewer');
-});
-
-test('late rename acknowledgment cannot follow replacement membership or block its naming', async t => {
-  const f = fixture(t); await f.commands.get('messages').handler('join review', f.ctx);
-  assert.ok(f.tools.get('peer_message').parameters.properties.action.enum.includes('rename'));
-  let release; let started; const ready = new Promise(r => { started = r; });
-  const barrier = new Promise(r => { release = r; }); const oldId = f.backend.peer.id;
-  const heartbeat = f.backend.heartbeat;
-  f.backend.heartbeat = async name => { await heartbeat(name); started(); await barrier; };
-  const pending = execute(f, 'rename', { displayName: 'old-reviewer' }); await ready;
-  await f.commands.get('messages').handler('leave', f.ctx);
-  await f.commands.get('messages').handler('join review', f.ctx);
-  f.backend.heartbeat = heartbeat;
-  await execute(f, 'rename', { displayName: 'new-reviewer' });
-  release(); await assert.rejects(pending, /participation|session changed/i);
-  assert.notEqual(f.backend.peer.id, oldId); assert.equal(f.backend.peer.displayName, 'new-reviewer');
 });
 
 test('normal human and agent member lists hide finalized tombstones', async t => {
@@ -621,7 +557,6 @@ test('messaging tool registration stays byte-stable across identity and metadata
   const f = fixture(t); const tool = f.tools.get('peer_message');
   const baseline = { object: tool.parameters, names: [...f.tools.keys()], schema: JSON.stringify(tool.parameters), prompt: JSON.stringify({ description: tool.description, snippet: tool.promptSnippet, guidelines: tool.promptGuidelines }) };
   await f.commands.get('messages').handler('join review', f.ctx);
-  await execute(f, 'rename', { displayName: 'cache-stable-reviewer' });
   await execute(f, 'peers'); await execute(f, 'status'); await f.backend.maintain(f.group);
   const current = f.tools.get('peer_message');
   assert.equal(current.parameters, baseline.object); assert.deepEqual([...f.tools.keys()], baseline.names);

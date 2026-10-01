@@ -28,7 +28,7 @@ async function fixture(t, holdAdmission = false) {
   const broker = await brokerFixture({ after: fn => cleanups.push(fn), skip: text => t.skip(text) }); if (!broker) return null;
   const sender = await connectBackend(broker.config, { initialize: true }); cleanups.push(() => sender.close());
   const receiver = await connectBackend(broker.config); cleanups.push(() => receiver.close());
-  const group = await sender.createGroup('quiet'); await sender.join(group, { sessionId: 'sender', displayName: 'Sender' });
+  const group = await sender.createGroup('host', { auto: true }); await sender.join(group, { sessionId: 'sender', displayName: 'Sender' });
   const reserve = receiver.reserve.bind(receiver);
   receiver.reserve = async () => {
     reserveCalls++; reservesInFlight++;
@@ -55,7 +55,7 @@ async function fixture(t, holdAdmission = false) {
   const settingsManager = SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false }, enableInstallTelemetry: false });
   const loader = new DefaultResourceLoader({ cwd: broker.root, agentDir: broker.root, settingsManager,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-    extensionFactories: [pi => registerMessaging(pi, async () => receiver, async () => {})] });
+    extensionFactories: [pi => registerMessaging(pi, async () => receiver, async () => {}, { settings: () => ({ autoJoin: true, sendsPerHour: 10, paused: false, retentionDays: 30, routeCooldownMinutes: 10 }) })] });
   await loader.reload();
   const created = await createAgentSession({ cwd: broker.root, agentDir: broker.root, modelRuntime, model, thinkingLevel: 'off',
     tools: ['work', 'peer_message'], resourceLoader: loader, settingsManager, sessionManager: SessionManager.create(broker.root, join(broker.root, 'sessions')),
@@ -70,8 +70,7 @@ async function fixture(t, holdAdmission = false) {
     notify: (text, level) => { if (level === 'error' || level === 'warning') errors.push(text); },
     setStatus: (_key, text) => { if (text?.includes('1 queued')) pendingStatus = true; },
   } });
-  await session.prompt('/messages join quiet'); assert.equal(requests.length, 0);
-  await sender.arm(group, 1);
+  await until(() => receiver.peer !== undefined, 'receiver auto-join'); assert.equal(requests.length, 0);
   return { sender, receiver, group, session, started, release, admitted, releaseAdmission, requests, errors, reserveCalls: () => reserveCalls, reservesInFlight: () => reservesInFlight, pendingStatus: () => pendingStatus };
 }
 async function finishWork(f) {
@@ -80,7 +79,7 @@ async function finishWork(f) {
   f.release[1].resolve();
   await until(async () => !f.session.isStreaming && f.requests.length === 4 && (await f.sender.listMessages(f.group))[0].state === 'observed', 'idle peer delivery');
   assert.deepEqual(f.requests.map(r => r.peer), [false, false, false, true]);
-  assert.equal((await f.sender.getGroupSummary(f.group)).used, 1); assert.deepEqual(f.errors, []);
+  assert.equal((await f.sender.getGroupSummary(f.group)).used, 0); assert.deepEqual(f.errors, []);
 }
 
 test('real SDK keeps busy messages in the broker until the whole work run finishes', { timeout: 20000 }, async t => {
@@ -103,7 +102,7 @@ test('real SDK queues an idle-to-busy admitted message after work rather than st
   await f.admitted.promise;
   const work = f.session.prompt('Do two steps of ordinary work'); await f.started[0].promise;
   f.releaseAdmission.resolve(); await until(() => f.session.agent.hasQueuedMessages(), 'Pi queue after admission race');
-  assert.equal((await f.sender.getGroupSummary(f.group)).used, 1);
+  assert.equal((await f.sender.getGroupSummary(f.group)).used, 0);
   assert.equal((await f.sender.listMessages(f.group))[0].state, 'attempted');
   assert.equal(f.session.messages.some(m => m.role === 'custom' && m.customType === 'pi-messaging.peer.v1'), false);
   await finishWork(f); await work;

@@ -11,6 +11,7 @@ export interface PeerMessage {
 }
 interface RuntimeHost {
   ready(): boolean;
+  tick?(): Promise<void>;
   deliver(message: PeerMessage, options: { triggerTurn: true; deliverAs: 'followUp' }): void;
   status(summary: GroupSummary | undefined): void;
   error(message: string): void;
@@ -28,20 +29,21 @@ export class MessagingRuntime {
   private unsubscribe?: () => void;
   private pendingBatch?: Reservation[];
   private receiving = false;
-  constructor(backend: MessagingBackend, group: GroupRef, host: RuntimeHost) {
+  private heartbeatMs: number;
+  constructor(backend: MessagingBackend, group: GroupRef, host: RuntimeHost, heartbeatMs = 5000) {
     if (!backend.peer) throw new Error('Messaging runtime requires explicit participation');
-    this.backend = backend; this.group = group; this.host = host; this.peerId = backend.peer.id;
+    this.backend = backend; this.group = group; this.host = host; this.peerId = backend.peer.id; this.heartbeatMs = heartbeatMs;
   }
   start(): void {
     if (this.stopped || this.unsubscribe) return;
     this.unsubscribe = this.backend.onChange(() => { void this.wake(); });
     const generation = this.generation;
     const heartbeat = async () => {
-      try { await this.backend.heartbeat(); await this.backend.maintain(this.group); if (generation === this.generation) await this.wake(); }
+      try { try { await this.host.tick?.(); } catch { /* extension maintenance is best effort */ } await this.backend.heartbeat(); await this.backend.maintain(this.group); if (generation === this.generation) await this.wake(); }
       catch (error) { if (generation === this.generation) this.fail(error); }
-      if (!this.stopped && generation === this.generation) { this.timer = setTimeout(heartbeat, 5000); this.timer.unref(); }
+      if (!this.stopped && generation === this.generation) { this.timer = setTimeout(heartbeat, this.heartbeatMs); this.timer.unref(); }
     };
-    this.timer = setTimeout(heartbeat, 5000); this.timer.unref();
+    this.timer = setTimeout(heartbeat, this.heartbeatMs); this.timer.unref();
     void this.wake();
   }
   wake(): Promise<void> {
