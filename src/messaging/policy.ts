@@ -70,7 +70,7 @@ function validateLedgerVersion(value: unknown, authorityId: string, version: 1 |
   const groups = value.groups; const peers = value.peers; const messages = value.messages;
   if (Object.keys(groups).length > 32 || Object.keys(peers).length > 512 || Object.keys(messages).length > 2000) fail('corrupt', 'Ledger exceeds bounds');
   for (const [id, group] of Object.entries(groups)) {
-    if (!isRecord(group) || !hasFields(group, ['authorityId', 'id', 'label', 'mode', 'round', 'limit', 'used']) || !uuid.test(id) || group.id !== id || group.authorityId !== authorityId || typeof group.label !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(group.label) || !['paused', 'armed', 'exhausted'].includes(typeof group.mode === 'string' ? group.mode : '') || !isNonnegativeInteger(group.used) || !isNonnegativeInteger(group.limit) || !isNonnegativeInteger(group.round) || group.used > group.limit || group.limit > 100 || (group.mode === 'exhausted' && group.used !== group.limit) || (group.mode === 'armed' && group.used >= group.limit) || (group.auto !== undefined && typeof group.auto !== 'boolean') || (group.auto === true && (group.mode !== 'paused' || group.limit !== 0 || group.used !== 0))) fail('corrupt', 'Invalid group ledger');
+    if (!isRecord(group) || !hasFields(group, ['authorityId', 'id', 'label', 'mode', 'round', 'limit', 'used']) || !uuid.test(id) || group.id !== id || group.authorityId !== authorityId || typeof group.label !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(group.label) || !['paused', 'armed', 'exhausted'].includes(typeof group.mode === 'string' ? group.mode : '') || !isNonnegativeInteger(group.used) || !isNonnegativeInteger(group.limit) || !isNonnegativeInteger(group.round) || group.used > group.limit || group.limit > 100 || (group.mode === 'exhausted' && group.used !== group.limit) || (group.mode === 'armed' && group.used >= group.limit) || (group.auto !== undefined && typeof group.auto !== 'boolean')) fail('corrupt', 'Invalid group ledger');
   }
   for (const [id, peer] of Object.entries(peers)) {
     if (!isRecord(peer) || !hasFields(peer, ['id', 'groupId', 'sessionId', 'displayName', 'active', 'lastSeen']) || !uuid.test(id) || peer.id !== id || typeof peer.groupId !== 'string' || !Object.hasOwn(groups, peer.groupId) || typeof peer.active !== 'boolean' || typeof peer.sessionId !== 'string' || !isFiniteNumber(peer.lastSeen) || typeof peer.displayName !== 'string') fail('corrupt', 'Invalid peer ledger');
@@ -291,7 +291,7 @@ function sendsPerHourValue(value: number | undefined): number {
 }
 export function peerCredits(peer: StoredPeer, sendsPerHour: number, now = Date.now()): number {
   const cap = sendsPerHourValue(sendsPerHour); const at = lifecycleTime(now);
-  return peer.credits === undefined ? cap : Math.min(cap, peer.credits + (at - (peer.creditsAt ?? at)) * sendsPerHour / 3_600_000);
+  return peer.credits === undefined ? cap : Math.min(cap, peer.credits + Math.max(0, at - (peer.creditsAt ?? at)) * cap / 3_600_000);
 }
 export function prepareMessage(s: Ledger, senderLease: ParticipantLease, input: SendInput, requestKey: string, now = Date.now(), options: { sendsPerHour?: number } = {}): MessageStatus {
   const sender = authorizeLease(s, senderLease); const normalized = validateInput(input); const createdAt = lifecycleTime(now); const sendsPerHour = sendsPerHourValue(options.sendsPerHour);

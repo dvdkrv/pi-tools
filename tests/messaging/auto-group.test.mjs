@@ -152,3 +152,18 @@ test('creating auto groups is sticky while manual group policy remains unchanged
   assert.equal(f.state.groups[f.group.id].auto, true);
   assert.deepEqual({ mode: f.state.groups[f.group.id].mode, limit: f.state.groups[f.group.id].limit, used: f.state.groups[f.group.id].used }, { mode: 'paused', limit: 0, used: 0 });
 });
+
+test('an older release arming the auto group cannot corrupt the ledger or meter auto admission', () => {
+  const f = fixture();
+  const group = f.state.groups[f.group.id];
+  Object.assign(group, { mode: 'armed', round: 1, limit: 1, used: 0 }); // what v0.4.2's arm writes
+  assert.doesNotThrow(() => p.validateLedger(f.state, f.state.authorityId));
+  const first = notice(f, 'first', 100);
+  p.observe(f.state, lease(f.b), p.admit(f.state, lease(f.b), first.id, 101), 102);
+  assert.equal(group.used, 0);
+});
+
+test('a clock step backwards never drains credits', () => {
+  const f = fixture(); notice(f, 'first', 10_000, { sendsPerHour: 2 });
+  assert.equal(p.peerCredits(f.a, 2, 0), 1);
+});
