@@ -72,6 +72,7 @@ export const HELP_TEXT = [
 ].join("\n");
 
 const DEFAULT_REFRESH_MS = 5000;
+const CPU_WARMUP_MS = 1000;
 const TRIAGE_PAGE = 10;
 const TRIAGE_HINTS = "j/k move · a accept · m merge · d dismiss · z snooze · A all from source · p promote · enter details · esc back";
 const itemLabel = (item: Item): string => `${item.id} ${item.title}  #${item.project}`;
@@ -116,6 +117,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 	const jobDeps = (): JobDeps => ({ ...deps.jobs, signal: checkAbort.signal });
 	const modals: Modal[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
+	let cpuWarmupTimer: ReturnType<typeof setTimeout> | undefined;
 	let resolveRun: (result: DashResult) => void = () => {};
 	const finished = new Promise<DashResult>((resolve) => {
 		resolveRun = resolve;
@@ -154,10 +156,17 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 	// Host collection is async and never fatal: one in flight at a time, and the frame is redrawn when it lands.
 	function collectHostNow(): void {
 		if (!collector || closed || collecting) return;
+		const first = host === undefined;
 		collecting = true;
 		collector(host?.sample)
 			.then((snapshot) => {
 				host = snapshot;
+				if (first && snapshot.cpuPercent === null && !closed) {
+					cpuWarmupTimer = setTimeout(() => {
+						cpuWarmupTimer = undefined;
+						collectHostNow();
+					}, CPU_WARMUP_MS);
+				}
 			})
 			.catch(() => {})
 			.finally(() => {
@@ -197,6 +206,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		if (closed) return;
 		closed = true;
 		if (timer) clearInterval(timer);
+		if (cpuWarmupTimer) clearTimeout(cpuWarmupTimer);
 		checkAbort.abort();
 		track("close", { moves, seconds: Math.round((store.clock().getTime() - openedAt) / 1000) });
 		term.stop();

@@ -166,10 +166,10 @@ export function renderDash(model: DashModel, state: ViewState, width: number, he
 	const offset = selectedLine >= bodyHeight ? selectedLine - bodyHeight + 1 : 0;
 	const visible = body.slice(offset, offset + bodyHeight);
 	const lines = [header(state, host, width, style)];
-	const liveSessions = all.filter((row) => row.kind === "session" && row.session.liveness === "live").length;
-	if (strip) lines.push(renderHostStrip(host, liveSessions, width, style));
+	const liveSessionPids = all.flatMap((row) => row.kind === "session" && row.session.liveness === "live" && row.session.pid ? [row.session.pid] : []);
+	if (strip) lines.push(renderHostStrip(host, liveSessionPids, width, style));
 	if (panel) {
-		const panelLines = renderHostPanel(host, liveSessions, PANEL_WIDTH, bodyHeight, style);
+		const panelLines = renderHostPanel(host, liveSessionPids, PANEL_WIDTH, bodyHeight, style);
 		for (let i = 0; i < Math.max(visible.length, panelLines.length); i++) {
 			const left = visible[i] ?? "";
 			lines.push(`${left}${" ".repeat(Math.max(0, leftWidth - visibleWidth(left)))}${style.dim(SEPARATOR)}${panelLines[i] ?? ""}`);

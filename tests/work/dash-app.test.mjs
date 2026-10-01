@@ -28,6 +28,7 @@ function fakeTerminal(columns = 100, rows = 30) {
   return t;
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const TITLE = /^Work dashboard · \d\d:\d\d:\d\d$/;
 const PANES = ['%1\t@1\tsap-rfc\tmain\t/src/sap\tnode', '%5\t@5\tshell\tmain\t/home\tzsh'].join('\n');
 
@@ -358,7 +359,7 @@ test('the host panel appears once collection lands, and R collects again', async
   const snapshot = {
     hostname: 'devbox', uptimeSeconds: 3600, cpuCount: 4, load: [1, 1, 1], cpuPercent: 10, corePercents: [10, 10, 10, 10],
     memory: null, cgroup: { memoryMaxBytes: null, memoryCurrentBytes: null, cpuLimit: null, pidsMax: null, pidsCurrent: null },
-    disks: [], topCpu: [], topMemory: [], piProcesses: 2, orphans: [], sample: { at: 1, cpu: [], procTicks: new Map() },
+    disks: [], topCpu: [], topMemory: [], piProcesses: 3, piPids: [11, 13, 99], orphans: [], sample: { at: 1, cpu: [], procTicks: new Map() },
   };
   const d = open(rt, { columns: 160, host: async (prev) => { samples.push(prev); return snapshot; } });
   assert.equal(d.terminal.screen()[0].includes('devbox'), false);
@@ -366,10 +367,31 @@ test('the host panel appears once collection lands, and R collects again', async
   const screen = d.terminal.screen();
   assert.match(screen[0], /^Work dashboard · devbox · \d\d:\d\d:\d\d$/);
   assert.match(screen[1], / │ Host {3}up 1h · 4 cpu · load 1.00 1.00 1.00$/);
-  assert.ok(screen.some((line) => line.includes('│ Pi     2 processes · 2 live sessions')));
+  assert.ok(screen.some((line) => line.includes('│ Pi     3 processes · 2 live sessions')));
+  assert.ok(screen.some((line) => line.endsWith('│        1 not reporting (/reload or restart)')));
   d.terminal.send('R');
   await tick();
   assert.deepEqual(samples, [undefined, snapshot.sample]);
+  d.terminal.send('q');
+  await d.result;
+});
+
+test('the first host snapshot schedules a second CPU sample after warm-up', async () => {
+  const { rt } = await fixture();
+  const samples = [];
+  const base = {
+    hostname: 'devbox', uptimeSeconds: 1, cpuCount: 2, load: null, corePercents: [], memory: null,
+    cgroup: { memoryMaxBytes: null, memoryCurrentBytes: null, cpuLimit: null, pidsMax: null, pidsCurrent: null },
+    disks: [], topCpu: [], topMemory: [], piProcesses: 0, piPids: [], orphans: [],
+  };
+  const first = { ...base, cpuPercent: null, sample: { at: 1, cpu: [{ idle: 1, total: 2 }], procTicks: new Map() } };
+  const second = { ...base, cpuPercent: 42, corePercents: [25, 75], sample: { at: 2, cpu: [{ idle: 2, total: 4 }], procTicks: new Map() } };
+  const d = open(rt, { columns: 160, host: async (prev) => { samples.push(prev); return prev ? second : first; } });
+  await tick();
+  assert.ok(d.terminal.screen().some((line) => line.includes('│ CPU    …')));
+  await delay(1100);
+  assert.deepEqual(samples, [undefined, first.sample]);
+  assert.ok(d.terminal.screen().some((line) => line.includes('│ CPU    42%')));
   d.terminal.send('q');
   await d.result;
 });

@@ -48,6 +48,12 @@ function paintPercent(style: Style, pct: number): Paint | undefined {
 	return undefined;
 }
 
+function paintDiskPercent(style: Style, pct: number): Paint | undefined {
+	if (pct >= 95) return (v) => style.color("red", v);
+	if (pct >= 85) return (v) => style.color("yellow", v);
+	return undefined;
+}
+
 function uptime(seconds: number): string {
 	const minutes = Math.floor(Math.max(0, seconds) / 60);
 	if (minutes >= 1440) return `${Math.floor(minutes / 1440)}d`;
@@ -69,9 +75,10 @@ function line(parts: readonly Part[], width: number): string {
 
 const labelPart = (label: string, style: Style): Part => ({ text: `${fit(label, LABEL)} `, paint: style.dim });
 const pctPart = (pct: number, style: Style, text = `${pct}%`): Part => ({ text, paint: paintPercent(style, pct) });
+const diskPctPart = (pct: number, style: Style, text = `${pct}%`): Part => ({ text, paint: paintDiskPercent(style, pct) });
 const collecting = (width: number, style: Style): string => line([{ text: "Host   collecting…", paint: style.dim }], width);
 
-export function renderHostPanel(host: HostSnapshot | undefined, liveSessions: number, width: number, height: number, style: Style): string[] {
+export function renderHostPanel(host: HostSnapshot | undefined, liveSessionPids: readonly number[], width: number, height: number, style: Style): string[] {
 	if (!host) return [collecting(width, style)];
 	const lines: string[] = [];
 	const add = (...parts: Part[]): void => void lines.push(line(parts, width));
@@ -111,7 +118,7 @@ export function renderHostPanel(host: HostSnapshot | undefined, liveSessions: nu
 	const mount = Math.min(MOUNT_CAP, Math.max(1, ...host.disks.map((disk) => visibleWidth(disk.mount))));
 	host.disks.forEach((disk, index) => {
 		const pct = percent(disk.usedBytes, disk.totalBytes);
-		add(labelPart(index === 0 ? "Disk" : "", style), { text: `${fit(disk.mount, mount)} ` }, pctPart(pct, style, `${pct}%`.padStart(4)), { text: `  ${bytesPair(disk.usedBytes, disk.totalBytes)}` });
+		add(labelPart(index === 0 ? "Disk" : "", style), { text: `${fit(disk.mount, mount)} ` }, diskPctPart(pct, style, `${pct}%`.padStart(4)), { text: `  ${bytesPair(disk.usedBytes, disk.totalBytes)}` });
 	});
 
 	const top = (label: string, kind: string, items: readonly TopProcess[], value: (p: TopProcess) => string): void => {
@@ -122,23 +129,41 @@ export function renderHostPanel(host: HostSnapshot | undefined, liveSessions: nu
 	top(host.topCpu.length ? "" : "Top", "mem", host.topMemory, (p) => formatBytes(p.value));
 
 	const processes = `${host.piProcesses} process${host.piProcesses === 1 ? "" : "es"}`;
-	add(labelPart("Pi", style), { text: `${processes}${SEP}${liveSessions} live session${liveSessions === 1 ? "" : "s"}` });
-	if (host.orphans.length) add(labelPart("Orphan", style), { text: host.orphans.map((group) => `${oneLine(group.comm)} ${group.count}`).join(SEP) });
+	const sessions = `${liveSessionPids.length} live session${liveSessionPids.length === 1 ? "" : "s"}`;
+	const reporting = new Set(liveSessionPids);
+	const notReporting = (host.piPids ?? []).filter((pid) => !reporting.has(pid)).length;
+	const pi = `${processes}${SEP}${sessions}`;
+	// Processes that run an older pi-tools, or none, do not register; the count says how to fix them.
+	const warning: Part = { text: `${notReporting} not reporting (/reload or restart)`, paint: (v) => style.color("yellow", v) };
+	if (notReporting === 0) add(labelPart("Pi", style), { text: pi });
+	else if (LABEL + 1 + visibleWidth(`${pi}${SEP}${warning.text}`) <= width) add(labelPart("Pi", style), { text: `${pi}${SEP}` }, warning);
+	else {
+		add(labelPart("Pi", style), { text: pi });
+		add({ text: " ".repeat(LABEL + 1) }, warning);
+	}
+	if (host.orphans.length) {
+		const parts = host.orphans.flatMap<Part>((group, index) => [
+			...(index > 0 ? [{ text: SEP }] : []),
+			{ text: `${oneLine(group.comm)} ` },
+			{ text: String(group.count), paint: (v) => style.color("yellow", v) },
+		]);
+		add(labelPart("Orphan", style), ...parts);
+	}
 	return lines.slice(0, Math.max(0, height));
 }
 
-// liveSessions keeps the strip's signature aligned with the panel; the strip has room only for the process count.
-export function renderHostStrip(host: HostSnapshot | undefined, _liveSessions: number, width: number, style: Style): string {
+// liveSessionPids keeps the strip's signature aligned with the panel; the strip has room only for the process count.
+export function renderHostStrip(host: HostSnapshot | undefined, _liveSessionPids: readonly number[], width: number, style: Style): string {
 	if (!host) return collecting(width, style);
 	const segments: Part[][] = [];
 	if (host.load) segments.push([{ text: `load ${host.load[0].toFixed(1)}/${host.cpuCount}` }]);
 	if (host.cpuPercent !== null) segments.push([{ text: "cpu " }, pctPart(Math.round(host.cpuPercent), style)]);
 	if (host.memory && host.memory.totalBytes > 0) segments.push([{ text: "mem " }, pctPart(percent(host.memory.totalBytes - host.memory.availableBytes, host.memory.totalBytes), style)]);
 	const fullest = host.disks.reduce<Disk | null>((best, disk) => (best === null || percent(disk.usedBytes, disk.totalBytes) > percent(best.usedBytes, best.totalBytes) ? disk : best), null);
-	if (fullest) segments.push([{ text: `disk ${oneLine(fullest.mount)} ` }, pctPart(percent(fullest.usedBytes, fullest.totalBytes), style)]);
+	if (fullest) segments.push([{ text: `disk ${oneLine(fullest.mount)} ` }, diskPctPart(percent(fullest.usedBytes, fullest.totalBytes), style)]);
 	segments.push([{ text: `pi ${host.piProcesses}` }]);
 	const orphans = host.orphans.reduce((sum, group) => sum + group.count, 0);
-	if (orphans > 0) segments.push([{ text: `orphans ${orphans}` }]);
+	if (orphans > 0) segments.push([{ text: `orphans ${orphans}`, paint: (v) => style.color("yellow", v) }]);
 	// Whole segments only: a segment that does not fit ends the strip.
 	const parts: Part[] = [];
 	let used = 0;

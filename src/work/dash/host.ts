@@ -29,6 +29,7 @@ export type HostSnapshot = {
 	topCpu: TopProcess[];
 	topMemory: TopProcess[];
 	piProcesses: number;
+	piPids: number[];
 	orphans: OrphanGroup[];
 	sample: HostSample;
 };
@@ -195,6 +196,7 @@ export async function collectHost(prev: HostSample | undefined, readers: HostRea
 			return value > 0 ? [{ pid: p.pid, comm: p.comm, value }] : [];
 		}))
 		: [];
+	const piPids = procs.filter((p) => p.comm === "pi").map((p) => p.pid);
 	return {
 		hostname: readers.hostname(),
 		uptimeSeconds: parseUptime(uptime ?? ""),
@@ -207,7 +209,8 @@ export async function collectHost(prev: HostSample | undefined, readers: HostRea
 		disks: collectDisks(parseMounts(mounts ?? ""), readers),
 		topCpu,
 		topMemory: top3(procs.map((p) => ({ pid: p.pid, comm: p.comm, value: p.rssBytes }))),
-		piProcesses: procs.filter((p) => p.comm === "pi").length,
+		piProcesses: piPids.length,
+		piPids,
 		orphans: orphanGroups(procs),
 		sample: { at, cpu, procTicks: new Map(procs.map((p) => [p.pid, p.ticks])) },
 	};
