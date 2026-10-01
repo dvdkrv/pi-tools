@@ -11,6 +11,7 @@ export interface PeerMessage {
 }
 interface RuntimeHost {
   ready(): boolean;
+  tick?(): Promise<void>;
   deliver(message: PeerMessage, options: { triggerTurn: true; deliverAs: 'followUp' }): void;
   status(summary: GroupSummary | undefined): void;
   error(message: string): void;
@@ -37,7 +38,7 @@ export class MessagingRuntime {
     this.unsubscribe = this.backend.onChange(() => { void this.wake(); });
     const generation = this.generation;
     const heartbeat = async () => {
-      try { await this.backend.heartbeat(); await this.backend.maintain(this.group); if (generation === this.generation) await this.wake(); }
+      try { try { await this.host.tick?.(); } catch { /* extension maintenance is best effort */ } await this.backend.heartbeat(); await this.backend.maintain(this.group); if (generation === this.generation) await this.wake(); }
       catch (error) { if (generation === this.generation) this.fail(error); }
       if (!this.stopped && generation === this.generation) { this.timer = setTimeout(heartbeat, 5000); this.timer.unref(); }
     };

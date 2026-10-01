@@ -38,7 +38,7 @@ async function createReceiverSession(t, broker, receiver, streamSimple, customTo
   const settings = SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false }, enableInstallTelemetry: false });
   const loader = new DefaultResourceLoader({ cwd: broker.root, agentDir: broker.root, settingsManager: settings,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-    extensionFactories: [pi => registerMessaging(pi, async () => receiver, async () => {})] });
+    extensionFactories: [pi => registerMessaging(pi, async () => receiver, async () => {}, { settings: () => ({ autoJoin: true, sendsPerHour: 10, paused: false, retentionDays: 30, routeCooldownMinutes: 10 }) })] });
   await loader.reload();
   const created = await createAgentSession({ cwd: broker.root, agentDir: broker.root, modelRuntime: runtime, model, thinkingLevel: 'off',
     tools: ['peer_message', ...customTools.map(tool => tool.name)], customTools, resourceLoader: loader, settingsManager: settings,
@@ -62,7 +62,7 @@ async function joinedBackends(t, label, senderCount) {
     const backend = await connectBackend(broker.config, { initialize: index === 0 }); t.after(() => backend.close()); senders.push(backend);
   }
   const receiver = await connectBackend(broker.config); t.after(() => receiver.close());
-  const group = await senders[0].createGroup(label);
+  const group = await senders[0].createGroup('host', { auto: true });
   for (let index = 0; index < senders.length; index++) await senders[index].join(group, { sessionId: `sender-${index}`, displayName: `Sender ${index}` });
   return { broker, senders, receiver, group };
 }
@@ -76,16 +76,14 @@ test('three pending senders produce one combined peer turn and spend three credi
     const message = assistant(model, [{ type: 'text', text: 'batch handled' }], 'stop');
     stream.push({ type: 'done', reason: 'stop', message }); return stream;
   });
-  await receiverSession.session.prompt('/messages join batch-sdk'); assert.equal(requests.length, 0);
-  await f.senders[0].arm(f.group, 3); await f.senders[0].pause(f.group);
+  await until(() => f.receiver.peer !== undefined, 'receiver auto-join'); assert.equal(requests.length, 0);
   const markers = ['BATCH_MARKER_1', 'BATCH_MARKER_2', 'BATCH_MARKER_3'];
   for (let index = 0; index < markers.length; index++) await f.senders[index].send({ kind: 'notice', toPeerId: f.receiver.peer.id, text: markers[index] }, `batch-${index}`);
-  await f.senders[0].arm(f.group, 3);
   await until(async () => requests.length === 1 && !receiverSession.session.isStreaming &&
     (await f.senders[0].listMessages(f.group)).every(message => message.state === 'observed'), 'one observed batch turn');
   const request = JSON.stringify(requests[0]);
   for (const marker of markers) assert.equal(request.split(marker).length - 1, 1);
-  assert.equal((await f.senders[0].getGroupSummary(f.group)).used, 3);
+  assert.equal((await f.senders[0].getGroupSummary(f.group)).used, 0);
   assert.deepEqual(receiverSession.errors, []);
 });
 
@@ -110,10 +108,8 @@ test('peer delivery remains append-only across a tool continuation', { timeout: 
     if (index === 0) firstResponse = structuredClone(message);
     stream.push({ type: 'done', reason: message.stopReason, message }); return stream;
   }, [work]);
-  await receiverSession.session.prompt('/messages join cache-shape'); assert.equal(requests.length, 0);
-  await f.senders[0].arm(f.group, 1); await f.senders[0].pause(f.group);
+  await until(() => f.receiver.peer !== undefined, 'receiver auto-join'); assert.equal(requests.length, 0);
   await f.senders[0].send({ kind: 'notice', toPeerId: f.receiver.peer.id, text: 'CACHE_APPEND_ONLY_MARKER' }, 'cache-message');
-  await f.senders[0].arm(f.group, 1);
   await until(async () => requests.length === 2 && !receiverSession.session.isStreaming &&
     (await f.senders[0].listMessages(f.group))[0].state === 'observed', 'tool continuation and receipt');
   assert.equal(requests.length, 2);

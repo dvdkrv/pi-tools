@@ -11,11 +11,13 @@ export interface HumanControls {
   groupsListed(groups: readonly GroupRef[]): void;
   joined(ref: GroupRef): void;
   leave(): Promise<void>;
+  pause(value: boolean): void;
+  paused(): boolean;
   guard(): void;
 }
 export async function handleMessages(args: string, ctx: ExtensionCommandContext, controls: HumanControls): Promise<void> {
   const [command = 'status', argument, ...extra] = args.trim().split(/\s+/).filter(Boolean);
-  if (extra.length || (argument && !['join', 'arm'].includes(command))) fail('validation', 'Usage: /messages status|join [group]|leave|arm [1–100]|pause|send|routes|inbox|prune|revoke');
+  if (extra.length || (argument && !['join', 'arm'].includes(command))) fail('validation', 'Usage: /messages status|join [group]|leave|arm [1–100]|pause|resume|send|routes|inbox|prune|revoke');
   const b = controls.backend;
   const ask = async <T>(value: Promise<T>): Promise<T> => { const result = await value; controls.guard(); return result; };
   async function selectGroup(create = false): Promise<GroupRef | undefined> {
@@ -104,7 +106,11 @@ export async function handleMessages(args: string, ctx: ExtensionCommandContext,
     const names = (await b.peers(group)).filter(p => p.active).map(peer => `${peerLabel(peer)} (${peerPresence(peer)})`).join(', ') || '(no active peers)';
     if (await ask(ctx.ui.confirm('Arm a NEW messaging round?', `${group.label}: ${limit} shared admissions, replacing unused allowance. ${summary.pendingCount} pending/uncertain messages. Peers: ${names}. Automatic model turns spend tokens. Old attempts are never replayed.`))) await b.arm(group, limit);
   } else if (command === 'pause') {
-    await b.pause(group); ctx.ui.notify('Paused new admissions. Already admitted Pi messages may still appear.', 'info');
+    const summary = await b.getGroupSummary(group);
+    if (summary?.auto) { controls.pause(true); ctx.ui.notify('Paused messaging for this session.', 'info'); }
+    else { await b.pause(group); ctx.ui.notify('Paused new admissions. Already admitted Pi messages may still appear.', 'info'); }
+  } else if (command === 'resume') {
+    controls.pause(false); ctx.ui.notify('Resumed messaging for this session.', 'info');
   } else if (command === 'send') {
     await compose(group);
   } else if (command === 'routes') {
@@ -166,5 +172,5 @@ export async function handleMessages(args: string, ctx: ExtensionCommandContext,
     const summary = await b.getGroupSummary(group);
     const peers = (await b.peers(group)).filter(peer => peer.active);
     ctx.ui.notify(safeText(`${group.label}: ${summary?.mode ?? 'missing'}, ${summary?.remaining ?? 0} admissions remaining; ${summary?.queuedCount ?? 0} queued, ${summary?.attemptedCount ?? 0} attempted, ${summary?.awaitingReplyCount ?? 0} awaiting reply, ${summary?.terminalUnresolvedCount ?? 0} terminal unresolved.\n${peers.map((p, i) => `${i + 1}. ${peerLabel(p)}: ${peerPresence(p)}`).join('\n')}`), 'info');
-  } else fail('validation', 'Unknown /messages command. Use status, join, leave, arm, pause, send, routes, inbox, prune, or revoke.');
+  } else fail('validation', 'Unknown /messages command. Use status, join, leave, arm, pause, resume, send, routes, inbox, prune, or revoke.');
 }
