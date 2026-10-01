@@ -34,7 +34,7 @@ Loop protections: each session may have only one unresolved outbound message, a 
 
 **Audit log.** Every accepted message is recorded with its time, sender, recipient, kind, the request it answers, its delivery state, and its full body in the work database (`work.db`, mode 0600), and kept for `messaging.retentionDays` (default 30). Only the user reads it: the dashboard's Messages section, and `work messages [--peer <name>] [--since 2h]` in a shell. `work messages` refuses to run inside a Pi agent's shell commands.
 
-`/messages` keeps the human controls: status, send, routes, inbox, prune, revoke, and pause. It can also join, arm, and leave manual groups with a finite shared allowance, as before.
+`/messages` keeps the human-controlled operations: status, send, routes, inbox, prune, revoke, and pause. It can also join, arm, and leave manual groups with a finite shared allowance, as before.
 
 Messaging requires NATS Server 2.14.6 in `PATH` (or `NATS_SERVER`) and uses a same-user loopback trust boundary.
 

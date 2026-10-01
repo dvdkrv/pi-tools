@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { clock, load, memoryStore, tempDir } from './helpers.mjs';
 
 const { exportJsonl, importJsonl, writeRotatingBackup } = await load('src/work/backup.ts');
+const { SCHEMA_VERSION } = await load('src/work/migrations.ts');
 
 async function populated() {
   const store = await memoryStore();
@@ -23,7 +24,7 @@ test('export and import round-trip every table', async () => {
   const rows = exportJsonl(source, path);
   assert.ok(rows > 5);
   assert.equal(statSync(path).mode & 0o777, 0o600);
-  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8').split('\n')[0]), { format: 'work-backup', schema: 3 });
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8').split('\n')[0]), { format: 'work-backup', schema: SCHEMA_VERSION });
   const target = await memoryStore();
   importJsonl(target, path);
   assert.deepEqual(target.listItems(), source.listItems());

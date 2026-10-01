@@ -94,7 +94,7 @@ test('a version 2 database migrates to version 3, and backups carry child runs',
   raw.exec('PRAGMA user_version = 2');
   raw.close();
   const store = WorkStore.open(path);
-  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 3);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, MIGRATIONS.length);
   assert.equal(store.isEmpty(), true);
   store.createChildRun(input(), 'session:lead-1', tree);
   assert.equal(store.dumpTables().child_run.length, 1);

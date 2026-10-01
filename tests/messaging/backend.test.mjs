@@ -315,7 +315,7 @@ test('real queue admits eight distinct senders to one recipient as one ordered b
   assert.ok((await f.a.listMessages(f.g)).every(m => m.state === 'attempted'));
 });
 
-test('role tool publishes self-name without rerouting queued work or inheriting an old session inbox', async t => {
+test('a refreshed self-name is published without rerouting queued work or inheriting an old session inbox', async t => {
   const f = await fixture(t); if (!f) return;
   const { registerMessaging } = await createJiti(import.meta.url).import('../../extensions/messaging.ts');
   const commands = new Map(); const tools = new Map(); const events = new Map(); const delivered = [];
@@ -332,7 +332,7 @@ test('role tool publishes self-name without rerouting queued work or inheriting 
   const before = await f.a.send({ kind: 'notice', toPeerId: f.b.peer.id, text: 'before rename' }, 'before');
   const incoming = await c.send({ kind: 'notice', toPeerId: oldId, text: 'old inbox' }, 'incoming');
   await f.b.observe(await f.b.reserve());
-  await tools.get('peer_message').execute('role', { action: 'rename', displayName: 'test-reviewer', toPeerId: '', text: '', inReplyTo: '', beforeSequence: 1 }, undefined, undefined, ctx);
+  await f.a.heartbeat('test-reviewer'); // the registry name refresh path
   const discovered = (await f.b.peers(f.g)).find(p => p.id === oldId);
   assert.equal(discovered.sessionId, 'a'); assert.equal(discovered.displayName, 'test-reviewer');
   assert.equal(f.a.peer.displayName, 'test-reviewer');

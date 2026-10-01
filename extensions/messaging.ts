@@ -111,7 +111,7 @@ export function registerMessaging(
     finally { if (mustClose) { if (backend === old) backend = undefined; await old?.close(); } }
   }
   async function autoJoin(ctx: ExtensionContext): Promise<boolean> {
-    if (child || ctx.mode !== 'tui' || !ctx.sessionManager.getSessionFile() || !settings().autoJoin) return false;
+    if (child || !settings().autoJoin || ctx.mode !== 'tui' || !ctx.sessionManager.getSessionFile()) return false;
     const generation = epoch; const b = await connect(generation); const group = await b.createGroup('host', { auto: true });
     const sessionId = ctx.sessionManager.getSessionId();
     if (!b.peer) {

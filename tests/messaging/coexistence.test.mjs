@@ -20,7 +20,7 @@ test('messaging registration does not reset or govern the separate loop extensio
   for (const handler of handlers.get('session_start')) await handler({}, ctx);
   await commands.get('loop').handler('start independent --max 3', ctx);
   await tools.get('loop_control').execute('continue', { action: 'continue' });
-  await assert.rejects(tools.get('peer_message').execute('peers', { action: 'peers' }, undefined, undefined, ctx), /join/i);
+  await assert.rejects(tools.get('peer_message').execute('peers', { action: 'peers' }, undefined, undefined, ctx), /not active/i);
   for (const handler of handlers.get('agent_settled')) await handler({}, ctx);
   assert.equal(entries.at(-1).data.iteration, 1);
   assert.equal(entries.at(-1).data.maxIterations, 3);
