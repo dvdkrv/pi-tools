@@ -8,10 +8,10 @@ import { captureIo, load, memoryRuntime, tempDir } from './helpers.mjs';
 const run = promisify(execFile);
 const { runCli, parseAssignments } = await load('src/work/cli.ts');
 
-async function cli(argv, { runtime, answers } = {}) {
+async function cli(argv, { runtime, answers, env = {} } = {}) {
   const rt = runtime ?? await memoryRuntime();
   const io = captureIo(answers);
-  const code = await runCli(argv, { runtime: () => rt, io: io.io, cwd: '/tmp', env: {}, repoFromCwd: () => undefined });
+  const code = await runCli(argv, { runtime: () => rt, io: io.io, cwd: '/tmp', env, repoFromCwd: () => undefined });
   return { code, rt, ...io };
 }
 
@@ -120,6 +120,41 @@ test('undismiss removes a dismissal', async () => {
   const r = await cli(['undismiss', 'k'], { runtime: rt });
   assert.equal(r.out[0], 'Removed dismissal for k');
   assert.equal(rt.store.isDismissed('k'), false);
+});
+
+test('messages prints the last 24 hours oldest first', async () => {
+  const rt = await memoryRuntime();
+  rt.store.logMessage({ id: 'old', at: '2026-09-24T08:59:59.000Z', groupLabel: 'host', senderPeer: 'p1', senderSession: null, senderName: 'Old', recipientPeer: 'p2', recipientSession: null, recipientName: 'Bob', kind: 'notice', inReplyTo: null, state: 'observed', body: 'too old' });
+  rt.store.logMessage({ id: 'new', at: '2026-09-25T08:30:00.000Z', groupLabel: 'host', senderPeer: 'p1', senderSession: null, senderName: 'Alice', recipientPeer: 'p2', recipientSession: null, recipientName: 'Bob', kind: 'notice', inReplyTo: null, state: 'observed', body: 'hello' });
+  const r = await cli(['messages'], { runtime: rt });
+  assert.equal(r.code, 0);
+  assert.equal(r.out[0], '2026-09-25 08:30  Alice -> Bob  notice  delivered\n    hello');
+});
+
+test('messages supports --peer and --since filters and reports empty output', async () => {
+  const rt = await memoryRuntime();
+  rt.store.logMessage({ id: 'one', at: '2026-09-25T07:30:00.000Z', groupLabel: 'host', senderPeer: 'p1', senderSession: 'alpha-1', senderName: 'Alice', recipientPeer: 'p2', recipientSession: null, recipientName: 'Bob', kind: 'notice', inReplyTo: null, state: 'queued', body: 'one' });
+  rt.store.logMessage({ id: 'two', at: '2026-09-25T08:30:00.000Z', groupLabel: 'host', senderPeer: 'p3', senderSession: null, senderName: 'Carol', recipientPeer: 'p4', recipientSession: null, recipientName: 'Dan', kind: 'notice', inReplyTo: null, state: 'queued', body: 'two' });
+  const filtered = await cli(['messages', '--peer', 'alice', '--since', '2h'], { runtime: rt });
+  assert.match(filtered.out[0], /Alice -> Bob/);
+  assert.doesNotMatch(filtered.out[0], /Carol -> Dan/);
+  const empty = await cli(['messages', '--peer', 'missing'], { runtime: rt });
+  assert.deepEqual(empty.out, ['No messages since 2026-09-24T09:00:00.000Z.']);
+});
+
+test('messages prunes entries older than configured retention', async () => {
+  const config = { github: { accounts: [] }, projects: [], rules: [], messaging: { autoJoin: true, sendsPerHour: 10, paused: false, retentionDays: 2, routeCooldownMinutes: 10 } };
+  const rt = await memoryRuntime({ config });
+  rt.store.logMessage({ id: 'expired', at: '2026-09-20T09:00:00.000Z', groupLabel: 'host', senderPeer: 'p1', senderSession: null, senderName: 'Alice', recipientPeer: 'p2', recipientSession: null, recipientName: 'Bob', kind: 'notice', inReplyTo: null, state: 'observed', body: 'old' });
+  await cli(['messages'], { runtime: rt });
+  assert.deepEqual(rt.store.listMessageLog(), []);
+});
+
+test('messages refuses to expose bodies to an agent shell', async () => {
+  const r = await cli(['messages'], { env: { PI_CODING_AGENT: '1' } });
+  assert.equal(r.code, 1);
+  assert.deepEqual(r.out, []);
+  assert.deepEqual(r.err, ['work messages is for the user; agents cannot read message bodies.']);
 });
 
 test('today syncs, then prints the planner command outside tmux', async () => {

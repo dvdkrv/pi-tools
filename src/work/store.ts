@@ -29,6 +29,8 @@ import type {
 	Link,
 	LinkKind,
 	LinkVia,
+	MessageLogEntry,
+	MessageLogKind,
 	NewCandidate,
 	NewLink,
 	Origin,
@@ -47,7 +49,7 @@ import type {
 	WaitingOn,
 	WorkEvent,
 } from "./types.ts";
-import { JOB_KINDS, NOTE_MAX } from "./types.ts";
+import { JOB_KINDS, NOTE_MAX, OPEN_MESSAGE_STATES } from "./types.ts";
 
 export class WorkStoreError extends Error {}
 
@@ -245,6 +247,25 @@ function toPlan(r: Row): Plan {
 
 function toEvent(r: Row): WorkEvent {
 	return { id: Number(r.id), at: String(r.at), actor: String(r.actor), entity: String(r.entity), action: String(r.action), data: json<unknown>(r.data, null) };
+}
+
+function toMessageLogEntry(r: Row): MessageLogEntry {
+	return {
+		id: String(r.id),
+		at: String(r.at),
+		groupLabel: String(r.group_label),
+		senderPeer: String(r.sender_peer),
+		senderSession: text(r.sender_session),
+		senderName: String(r.sender_name),
+		recipientPeer: String(r.recipient_peer),
+		recipientSession: text(r.recipient_session),
+		recipientName: String(r.recipient_name),
+		kind: r.kind as MessageLogKind,
+		inReplyTo: text(r.in_reply_to),
+		state: String(r.state),
+		stateAt: String(r.state_at),
+		body: String(r.body),
+	};
 }
 
 function toRun(r: Row): ConnectorRun {
@@ -1025,6 +1046,61 @@ export class WorkStore {
 			this.event(actor, `child:${id}`, "discard", { before, after });
 			return after;
 		});
+	}
+
+	// Message log (operational: no events)
+
+	logMessage(entry: Omit<MessageLogEntry, "stateAt"> & { stateAt?: string }): void {
+		this.run(
+			`INSERT OR IGNORE INTO message_log
+			 (id, at, group_label, sender_peer, sender_session, sender_name, recipient_peer, recipient_session, recipient_name, kind, in_reply_to, state, state_at, body)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			entry.id, entry.at, entry.groupLabel, entry.senderPeer, entry.senderSession, entry.senderName, entry.recipientPeer, entry.recipientSession,
+			entry.recipientName, entry.kind, entry.inReplyTo, entry.state, entry.stateAt ?? entry.at, entry.body,
+		);
+	}
+
+	setMessageStates(updates: readonly { id: string; state: string; at: string }[]): number {
+		return this.transaction(() => {
+			let changed = 0;
+			for (const update of updates) changed += this.run("UPDATE message_log SET state = ?, state_at = ? WHERE id = ? AND state <> ?", update.state, update.at, update.id, update.state).changes;
+			return changed;
+		});
+	}
+
+	openMessageIds(): string[] {
+		const marks = OPEN_MESSAGE_STATES.map(() => "?").join(", ");
+		return this.all(`SELECT id FROM message_log WHERE state IN (${marks}) ORDER BY at, id`, ...OPEN_MESSAGE_STATES).map((row) => String(row.id));
+	}
+
+	listMessageLog(filter: { since?: string; peer?: string; limit?: number } = {}): MessageLogEntry[] {
+		const clauses: string[] = [];
+		const params: Param[] = [];
+		if (filter.since) {
+			clauses.push("at >= ?");
+			params.push(filter.since);
+		}
+		if (filter.peer) {
+			clauses.push("(instr(lower(sender_name), lower(?)) > 0 OR instr(lower(recipient_name), lower(?)) > 0 OR instr(lower(sender_session), lower(?)) = 1 OR instr(lower(recipient_session), lower(?)) = 1)");
+			params.push(filter.peer, filter.peer, filter.peer, filter.peer);
+		}
+		const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+		const limit = filter.limit === undefined ? "" : " LIMIT ?";
+		if (filter.limit !== undefined) params.push(filter.limit);
+		return this.all(`SELECT * FROM message_log${where} ORDER BY at DESC, rowid DESC${limit}`, ...params).map(toMessageLogEntry);
+	}
+
+	messageThread(id: string): { message: MessageLogEntry; request: MessageLogEntry | null; replies: MessageLogEntry[] } | undefined {
+		const row = this.one("SELECT * FROM message_log WHERE id = ?", id);
+		if (!row) return undefined;
+		const message = toMessageLogEntry(row);
+		const requestRow = message.inReplyTo ? this.one("SELECT * FROM message_log WHERE id = ?", message.inReplyTo) : undefined;
+		const replies = this.all("SELECT * FROM message_log WHERE in_reply_to = ? ORDER BY at, rowid", id).map(toMessageLogEntry);
+		return { message, request: requestRow ? toMessageLogEntry(requestRow) : null, replies };
+	}
+
+	pruneMessageLog(before: string): number {
+		return this.run("DELETE FROM message_log WHERE at < ?", before).changes;
 	}
 
 	// Usage (operational: no events)
