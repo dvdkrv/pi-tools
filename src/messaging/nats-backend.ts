@@ -123,7 +123,7 @@ class NatsBackend implements MessagingBackend {
     policy.fail('busy', 'Messaging ledger busy; operation was not committed');
   }
   async listGroups(): Promise<GroupRef[]> { return Object.values((await this.snapshot()).state.groups).map(policy.refOf); }
-  async createGroup(label: string): Promise<GroupRef> { return this.change(s => policy.createGroup(s, label)); }
+  async createGroup(label: string, options?: { auto?: boolean }): Promise<GroupRef> { return this.change(s => policy.createGroup(s, label, options)); }
   async getGroupSummary(ref: GroupRef): Promise<GroupSummary | null> {
     const { state } = await this.snapshot();
     if (ref.authorityId !== state.authorityId) policy.fail('authority', 'Messaging authority mismatch');
@@ -295,13 +295,13 @@ class NatsBackend implements MessagingBackend {
   }
   async arm(ref: GroupRef, limit: number): Promise<void> { await this.change(s => policy.arm(s, ref, limit)); }
   async pause(ref: GroupRef): Promise<void> { await this.change(s => policy.pause(s, ref)); }
-  async maintain(ref: GroupRef, now = Date.now()): Promise<void> {
-    await this.change(state => { policy.groupOf(state, ref); policy.maintain(state, now); });
+  async maintain(ref: GroupRef, now = Date.now(), options?: { routeCooldownMs?: number }): Promise<void> {
+    await this.change(state => { policy.groupOf(state, ref); policy.maintain(state, now, options); });
     if (now - this.lastMaintenance >= 60_000) {
       await this.prune(ref, true, now - policy.HISTORY_TTL_MS); this.lastMaintenance = now;
     }
   }
-  async send(input: SendInput, requestKey: string): Promise<MessageStatus> {
+  async send(input: SendInput, requestKey: string, options?: { sendsPerHour?: number }): Promise<MessageStatus> {
     const participation = this.joined(); const { peer, lease } = participation; policy.validateInput(input);
     if (Date.now() - this.lastMaintenance > 60000) {
       const { state } = await this.snapshot();
@@ -309,7 +309,11 @@ class NatsBackend implements MessagingBackend {
       await this.prune(policy.refOf(state.groups[peer.groupId]), true, Date.now() - 7 * 86400000);
       this.lastMaintenance = Date.now();
     }
-    const m = await this.change(state => { policy.maintain(state); return policy.prepareMessage(state, lease, input, requestKey); });
+    const committed = await this.change(state => {
+      policy.maintain(state); const message = policy.prepareMessage(state, lease, input, requestKey, Date.now(), options);
+      return { message, peer: policy.publicPeer(policy.requireLease(state, lease)) };
+    });
+    participation.peer = committed.peer; const m = committed.message;
     // An idempotent retry of an attempted/terminal message must not republish it.
     if (m.state !== 'queued') return m;
     const body = policy.envelope(policy.newLedger(this.authorityId), m, input.text);

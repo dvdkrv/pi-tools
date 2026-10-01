@@ -40,6 +40,10 @@ export function validateInput(input: HashInput, allowLegacy = false): HashInput 
 }
 export function payloadHash(input: HashInput, allowLegacy = false): string { return createHash('sha256').update(JSON.stringify(validateInput(input, allowLegacy))).digest('hex'); }
 export function routeKey(fromPeerId: string, toPeerId: string): string { return `${fromPeerId}:${toPeerId}`; }
+function closeProtocolRoute(s: Ledger, groupId: string, fromPeerId: string, toPeerId: string, now: number): void {
+  const group = s.groups[groupId];
+  s.routes[routeKey(fromPeerId, toPeerId)] = { groupId, fromPeerId, toPeerId, mode: 'closed', ...(group.auto ? { closedAt: now } : {}) };
+}
 export function newLedger(authorityId: string): Ledger {
   if (!uuid.test(authorityId)) fail('validation', 'Invalid authority ID');
   return { version: 3, authorityId, sequence: 0, groups: {}, peers: {}, routes: {}, messages: {} };
@@ -66,7 +70,7 @@ function validateLedgerVersion(value: unknown, authorityId: string, version: 1 |
   const groups = value.groups; const peers = value.peers; const messages = value.messages;
   if (Object.keys(groups).length > 32 || Object.keys(peers).length > 512 || Object.keys(messages).length > 2000) fail('corrupt', 'Ledger exceeds bounds');
   for (const [id, group] of Object.entries(groups)) {
-    if (!isRecord(group) || !hasFields(group, ['authorityId', 'id', 'label', 'mode', 'round', 'limit', 'used']) || !uuid.test(id) || group.id !== id || group.authorityId !== authorityId || typeof group.label !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(group.label) || !['paused', 'armed', 'exhausted'].includes(typeof group.mode === 'string' ? group.mode : '') || !isNonnegativeInteger(group.used) || !isNonnegativeInteger(group.limit) || !isNonnegativeInteger(group.round) || group.used > group.limit || group.limit > 100 || (group.mode === 'exhausted' && group.used !== group.limit) || (group.mode === 'armed' && group.used >= group.limit)) fail('corrupt', 'Invalid group ledger');
+    if (!isRecord(group) || !hasFields(group, ['authorityId', 'id', 'label', 'mode', 'round', 'limit', 'used']) || !uuid.test(id) || group.id !== id || group.authorityId !== authorityId || typeof group.label !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(group.label) || !['paused', 'armed', 'exhausted'].includes(typeof group.mode === 'string' ? group.mode : '') || !isNonnegativeInteger(group.used) || !isNonnegativeInteger(group.limit) || !isNonnegativeInteger(group.round) || group.used > group.limit || group.limit > 100 || (group.mode === 'exhausted' && group.used !== group.limit) || (group.mode === 'armed' && group.used >= group.limit) || (group.auto !== undefined && typeof group.auto !== 'boolean') || (group.auto === true && (group.mode !== 'paused' || group.limit !== 0 || group.used !== 0))) fail('corrupt', 'Invalid group ledger');
   }
   for (const [id, peer] of Object.entries(peers)) {
     if (!isRecord(peer) || !hasFields(peer, ['id', 'groupId', 'sessionId', 'displayName', 'active', 'lastSeen']) || !uuid.test(id) || peer.id !== id || typeof peer.groupId !== 'string' || !Object.hasOwn(groups, peer.groupId) || typeof peer.active !== 'boolean' || typeof peer.sessionId !== 'string' || !isFiniteNumber(peer.lastSeen) || typeof peer.displayName !== 'string') fail('corrupt', 'Invalid peer ledger');
@@ -80,6 +84,8 @@ function validateLedgerVersion(value: unknown, authorityId: string, version: 1 |
         if (peer.suspendedAt !== undefined && !isFiniteNumber(peer.suspendedAt)) fail('corrupt', 'Invalid peer suspension timestamp');
         if (!peer.active && (!isFiniteNumber(peer.endedAt) || !['leave', 'revoke', 'expired'].includes(String(peer.endReason)))) fail('corrupt', 'Invalid ended peer lifecycle');
         if (peer.active && (peer.endedAt !== undefined || peer.endReason !== undefined)) fail('corrupt', 'Active peer cannot have ended lifecycle');
+        if (peer.credits !== undefined && (!isFiniteNumber(peer.credits) || peer.credits < 0)) fail('corrupt', 'Invalid peer credits');
+        if (peer.creditsAt !== undefined && !isFiniteNumber(peer.creditsAt)) fail('corrupt', 'Invalid peer credits timestamp');
       }
     }
   }
@@ -88,6 +94,7 @@ function validateLedgerVersion(value: unknown, authorityId: string, version: 1 |
       if (!isRecord(route) || !hasFields(route, ['groupId', 'fromPeerId', 'toPeerId', 'mode']) || key !== routeKey(String(route.fromPeerId), String(route.toPeerId)) || !Object.hasOwn(peers, String(route.fromPeerId)) || !Object.hasOwn(peers, String(route.toPeerId)) || route.fromPeerId === route.toPeerId || !['open', 'closed', 'reply-only'].includes(String(route.mode))) fail('corrupt', 'Invalid route ledger');
       const from = peers[String(route.fromPeerId)] as Record<string, unknown>; const to = peers[String(route.toPeerId)] as Record<string, unknown>;
       if (route.groupId !== from.groupId || route.groupId !== to.groupId || from.active !== true || to.active !== true) fail('corrupt', 'Invalid route ledger');
+      if (route.closedAt !== undefined && (route.mode !== 'closed' || !isFiniteNumber(route.closedAt))) fail('corrupt', 'Invalid closed route timestamp');
       if (route.mode === 'reply-only') {
         const request = typeof route.requestMessageId === 'string' ? messages[route.requestMessageId] : undefined;
         if (!isRecord(request) || request.kind !== 'request' || request.senderPeerId !== route.toPeerId || request.recipientPeerId !== route.fromPeerId || !['pending-delivery', 'awaiting-reply'].includes(String(request.conversationState))) fail('corrupt', 'Invalid reply-only route request');
@@ -148,7 +155,7 @@ export function migrateLedger(value: unknown, authorityId: string, _now = Date.n
   validateLedger(ledger, authorityId); return { ledger, migrated: true };
 }
 export function publicPeer(peer: StoredPeer): Peer {
-  return { id: peer.id, groupId: peer.groupId, sessionId: peer.sessionId, displayName: peer.displayName, active: peer.active, suspended: peer.suspended, lastSeen: peer.lastSeen, ...(peer.suspendedAt !== undefined ? { suspendedAt: peer.suspendedAt } : {}), ...(peer.endedAt !== undefined ? { endedAt: peer.endedAt } : {}), ...(peer.endReason !== undefined ? { endReason: peer.endReason } : {}) };
+  return { id: peer.id, groupId: peer.groupId, sessionId: peer.sessionId, displayName: peer.displayName, active: peer.active, suspended: peer.suspended, lastSeen: peer.lastSeen, ...(peer.suspendedAt !== undefined ? { suspendedAt: peer.suspendedAt } : {}), ...(peer.endedAt !== undefined ? { endedAt: peer.endedAt } : {}), ...(peer.endReason !== undefined ? { endReason: peer.endReason } : {}), ...(peer.credits !== undefined ? { credits: peer.credits } : {}), ...(peer.creditsAt !== undefined ? { creditsAt: peer.creditsAt } : {}) };
 }
 export function peerPresence(peer: Peer, now = Date.now()): PeerPresence {
   lifecycleTime(now);
@@ -178,17 +185,21 @@ function authorizeLease(s: Ledger, value: unknown): StoredPeer {
 }
 export function requireLease(s: Ledger, lease: ParticipantLease): StoredPeer { return authorizeLease(s, lease); }
 export function refOf(g: Group): GroupRef { return { authorityId: g.authorityId, id: g.id, label: g.label }; }
-export function createGroup(s: Ledger, label: string): GroupRef {
+export function createGroup(s: Ledger, label: string, options: { auto?: boolean } = {}): GroupRef {
   if (!/^[a-z][a-z0-9-]{0,47}$/.test(label)) fail('validation', 'Group label must be 1–48 lowercase letters/digits/hyphens, starting with a letter');
+  if (options.auto !== undefined && typeof options.auto !== 'boolean') fail('validation', 'Group auto must be a boolean');
   const existing = Object.values(s.groups).find(g => g.label === label);
-  if (existing) return refOf(existing);
+  if (existing) {
+    if (options.auto) { existing.auto = true; existing.mode = 'paused'; existing.limit = 0; existing.used = 0; }
+    return refOf(existing);
+  }
   if (Object.keys(s.groups).length >= 32) fail('full', 'Group store full; prune inactive groups');
-  const g: Group = { authorityId: s.authorityId, id: randomUUID(), label, mode: 'paused', round: 0, limit: 0, used: 0 };
+  const g: Group = { authorityId: s.authorityId, id: randomUUID(), label, mode: 'paused', round: 0, limit: 0, used: 0, ...(options.auto ? { auto: true } : {}) };
   s.groups[g.id] = g; return refOf(g);
 }
 export function joinPeer(s: Ledger, ref: GroupRef, info: { sessionId: string; displayName: string }, now = Date.now()): StoredPeer {
   const group = groupOf(s, ref); const joinedAt = lifecycleTime(now);
-  if (Object.keys(s.peers).length >= 512 || Object.values(s.peers).filter(p => p.groupId === group.id && p.active).length >= 16) fail('full', 'Peer store full; leave/revoke and prune old peers');
+  if (Object.keys(s.peers).length >= 512 || Object.values(s.peers).filter(p => p.groupId === group.id && p.active).length >= (group.auto ? 32 : 16)) fail('full', 'Peer store full; leave/revoke and prune old peers');
   if (!info.sessionId || info.sessionId.length > 256) fail('validation', 'Invalid session ID');
   const peer: StoredPeer = { id: randomUUID(), groupId: group.id, sessionId: info.sessionId, displayName: validateDisplayName(info.displayName), active: true, suspended: false, lastSeen: joinedAt, leaseId: randomUUID() };
   for (const other of Object.values(s.peers)) if (other.groupId === group.id && other.active) {
@@ -247,6 +258,7 @@ export function heartbeat(s: Ledger, lease: ParticipantLease, displayName?: stri
 export function arm(s: Ledger, ref: GroupRef, limit: number): void {
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) fail('validation', 'Allowance must be an integer from 1 to 100');
   const g = groupOf(s, ref);
+  if (g.auto) return;
   const queued = reservedSlots(s, g.id);
   if (limit < queued) fail('allowance', `Allowance must cover ${queued} already reserved admission${queued === 1 ? '' : 's'}`);
   g.round++; g.limit = limit; g.used = 0; g.mode = 'armed';
@@ -272,8 +284,17 @@ export function setRoute(s: Ledger, ref: GroupRef, fromPeerId: string, toPeerId:
   }
   s.routes[key] = { groupId: group.id, fromPeerId: from.id, toPeerId: to.id, mode };
 }
-export function prepareMessage(s: Ledger, senderLease: ParticipantLease, input: SendInput, requestKey: string, now = Date.now()): MessageStatus {
-  const sender = authorizeLease(s, senderLease); const normalized = validateInput(input); const createdAt = lifecycleTime(now);
+function sendsPerHourValue(value: number | undefined): number {
+  const sendsPerHour = value ?? 10;
+  if (!Number.isInteger(sendsPerHour) || sendsPerHour < 1 || sendsPerHour > 1000) fail('validation', 'sendsPerHour must be an integer from 1 to 1000');
+  return sendsPerHour;
+}
+export function peerCredits(peer: StoredPeer, sendsPerHour: number, now = Date.now()): number {
+  const cap = sendsPerHourValue(sendsPerHour); const at = lifecycleTime(now);
+  return peer.credits === undefined ? cap : Math.min(cap, peer.credits + (at - (peer.creditsAt ?? at)) * sendsPerHour / 3_600_000);
+}
+export function prepareMessage(s: Ledger, senderLease: ParticipantLease, input: SendInput, requestKey: string, now = Date.now(), options: { sendsPerHour?: number } = {}): MessageStatus {
+  const sender = authorizeLease(s, senderLease); const normalized = validateInput(input); const createdAt = lifecycleTime(now); const sendsPerHour = sendsPerHourValue(options.sendsPerHour);
   if (!requestKey || requestKey.length > 512) fail('validation', 'Invalid request key');
   const hash = payloadHash(normalized);
   const existing = Object.values(s.messages).find(m => m.senderPeerId === sender.id && m.requestKey === requestKey);
@@ -294,41 +315,44 @@ export function prepareMessage(s: Ledger, senderLease: ParticipantLease, input: 
   const queued = queuedInGroup(s, group.id);
   if (queued.filter(message => message.recipientPeerId === recipient.id).length >= MAX_QUEUED_PER_RECIPIENT) fail('full', 'Recipient already has eight queued messages');
   const required = normalized.kind === 'request' ? 2 : normalized.kind === 'reply' ? 0 : 1;
-  if (group.limit - group.used - reservedSlots(s, group.id) < required) fail('allowance', 'No unspent messaging allowance remains for this message');
+  if (!group.auto && group.limit - group.used - reservedSlots(s, group.id) < required) fail('allowance', 'No unspent messaging allowance remains for this message');
+  const cost = group.auto && normalized.kind !== 'reply' ? 1 : 0; const credits = peerCredits(sender, sendsPerHour, createdAt);
+  if (credits < cost) fail('allowance', `Messaging budget spent (${sendsPerHour} sends per hour); the next send is possible in about ${Math.ceil((cost - credits) * 60 / sendsPerHour)} minute(s)`);
   if (Object.keys(s.messages).length >= 2000 || Object.values(s.messages).filter(m => m.groupId === sender.groupId && ['queued', 'attempted'].includes(m.state)).length >= 64) fail('full', 'Message queue/store full; cancel, dismiss, or prune from the human inbox');
   if (s.sequence >= Number.MAX_SAFE_INTEGER) fail('full', 'Sequence exhausted');
   const kind = normalized.kind; if (!kind) fail('validation', 'Message kind is required');
+  if (group.auto) { sender.credits = credits - cost; sender.creditsAt = createdAt; }
   const m: MessageStatus = { id: randomUUID(), sequence: ++s.sequence, groupId: sender.groupId, senderPeerId: sender.id, recipientPeerId: recipient.id, senderName: sender.displayName, requestKey, hash, createdAt, kind, state: 'queued', ...(kind === 'request' ? { conversationState: 'pending-delivery' as const } : {}), ...(normalized.inReplyTo ? { inReplyTo: normalized.inReplyTo } : {}) };
-  if (kind === 'notice') s.routes[routeKey(recipient.id, sender.id)].mode = 'closed';
+  if (kind === 'notice') closeProtocolRoute(s, sender.groupId, recipient.id, sender.id, createdAt);
   if (kind === 'request') s.routes[routeKey(recipient.id, sender.id)] = { groupId: sender.groupId, fromPeerId: recipient.id, toPeerId: sender.id, mode: 'reply-only', requestMessageId: m.id };
   if (kind === 'reply' && repliedRequest) {
     repliedRequest.conversationState = 'reply-pending'; repliedRequest.replyMessageId = m.id;
-    s.routes[routeKey(sender.id, recipient.id)] = { groupId: sender.groupId, fromPeerId: sender.id, toPeerId: recipient.id, mode: 'closed' };
-    s.routes[routeKey(recipient.id, sender.id)] = { groupId: sender.groupId, fromPeerId: recipient.id, toPeerId: sender.id, mode: 'closed' };
+    closeProtocolRoute(s, sender.groupId, sender.id, recipient.id, createdAt);
+    closeProtocolRoute(s, sender.groupId, recipient.id, sender.id, createdAt);
   }
   s.messages[m.id] = m; return m;
 }
 export function canReceive(s: Ledger, recipientLease: ParticipantLease, now = Date.now()): boolean {
   authorizeLease(s, recipientLease); maintain(s, now); const peer = authorizeLease(s, recipientLease); const group = s.groups[peer.groupId];
-  return group.mode === 'armed' && group.used < group.limit && !Object.values(s.messages).some(m => m.recipientPeerId === peer.id && m.state === 'attempted');
+  return (group.auto || (group.mode === 'armed' && group.used < group.limit)) && !Object.values(s.messages).some(m => m.recipientPeerId === peer.id && m.state === 'attempted');
 }
 export function admitBatch(s: Ledger, recipientLease: ParticipantLease, messageIds: readonly string[], now = Date.now()): Reservation[] {
   authorizeLease(s, recipientLease); maintain(s, now); const peer = authorizeLease(s, recipientLease);
   if (messageIds.length === 0) return [];
   if (messageIds.length > MAX_QUEUED_PER_RECIPIENT || new Set(messageIds).size !== messageIds.length) fail('validation', 'Invalid messaging batch');
   const group = s.groups[peer.groupId];
-  if (group.mode !== 'armed' || group.used >= group.limit || Object.values(s.messages).some(m => m.recipientPeerId === peer.id && m.state === 'attempted')) return [];
+  if ((!group.auto && (group.mode !== 'armed' || group.used >= group.limit)) || Object.values(s.messages).some(m => m.recipientPeerId === peer.id && m.state === 'attempted')) return [];
   const selected: MessageStatus[] = [];
   for (const id of messageIds) {
     const message = Object.hasOwn(s.messages, id) ? s.messages[id] : undefined;
     if (!message || message.state !== 'queued') continue;
     if (message.recipientPeerId !== peer.id || message.groupId !== group.id) fail('corrupt', 'Batch candidate belongs to another inbox');
-    if (selected.length < group.limit - group.used) selected.push(message);
+    if (group.auto || selected.length < group.limit - group.used) selected.push(message);
   }
   const attemptedAt = lifecycleTime(now);
   return selected.map(message => {
     message.state = 'attempted'; message.attemptId = randomUUID(); message.attemptRound = group.round; message.attemptedAt = attemptedAt;
-    if (++group.used === group.limit) group.mode = 'exhausted';
+    if (!group.auto && ++group.used === group.limit) group.mode = 'exhausted';
     return { group: refOf(group), peerId: peer.id, message: { ...message }, attemptId: message.attemptId, round: group.round };
   });
 }
@@ -366,25 +390,29 @@ export function observeBatch(s: Ledger, recipientLease: ParticipantLease, reserv
   }
 }
 export function observe(s: Ledger, recipientLease: ParticipantLease, reservation: Reservation, now = Date.now()): void { observeBatch(s, recipientLease, [reservation], now); }
-export function maintain(s: Ledger, now = Date.now()): void {
-  const at = lifecycleTime(now);
+export function maintain(s: Ledger, now = Date.now(), options: { routeCooldownMs?: number } = {}): void {
+  const at = lifecycleTime(now); const routeCooldownMs = options.routeCooldownMs ?? 10 * 60_000;
+  if (!isFiniteNumber(routeCooldownMs) || routeCooldownMs < 0) fail('validation', 'Invalid route cooldown');
   for (const message of Object.values(s.messages).sort((a, b) => a.sequence - b.sequence)) {
     if (message.state === 'queued' && at >= message.createdAt + QUEUED_TTL_MS) {
       message.state = 'expired'; message.terminalAt = at;
-      if (message.kind === 'request') { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; s.routes[routeKey(message.recipientPeerId, message.senderPeerId)] = { groupId: message.groupId, fromPeerId: message.recipientPeerId, toPeerId: message.senderPeerId, mode: 'closed' }; }
+      if (message.kind === 'request') { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; closeProtocolRoute(s, message.groupId, message.recipientPeerId, message.senderPeerId, at); }
       if (message.kind === 'reply' && message.inReplyTo && s.messages[message.inReplyTo]?.kind === 'request') {
         const request = s.messages[message.inReplyTo]; request.conversationState = 'unanswered'; request.conversationTerminalAt = at;
       }
     } else if (message.state === 'attempted' && message.attemptedAt !== undefined && at >= message.attemptedAt + ATTEMPT_TTL_MS) {
       message.state = 'terminal-unresolved'; message.terminalAt = at;
-      if (message.kind === 'request') { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; s.routes[routeKey(message.recipientPeerId, message.senderPeerId)] = { groupId: message.groupId, fromPeerId: message.recipientPeerId, toPeerId: message.senderPeerId, mode: 'closed' }; }
+      if (message.kind === 'request') { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; closeProtocolRoute(s, message.groupId, message.recipientPeerId, message.senderPeerId, at); }
       if (message.kind === 'reply' && message.inReplyTo && s.messages[message.inReplyTo]?.kind === 'request') {
         const request = s.messages[message.inReplyTo]; request.conversationState = 'unanswered'; request.conversationTerminalAt = at;
       }
     } else if (message.kind === 'request' && message.conversationState === 'awaiting-reply') {
       const route = s.routes[routeKey(message.recipientPeerId, message.senderPeerId)];
-      if (route?.expiresAt !== undefined && at >= route.expiresAt) { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; route.mode = 'closed'; delete route.requestMessageId; delete route.observedAt; delete route.expiresAt; }
+      if (route?.expiresAt !== undefined && at >= route.expiresAt) { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; closeProtocolRoute(s, message.groupId, message.recipientPeerId, message.senderPeerId, at); }
     }
+  }
+  for (const route of Object.values(s.routes)) if (route.mode === 'closed' && route.closedAt !== undefined && route.closedAt + routeCooldownMs <= at && s.groups[route.groupId]?.auto) {
+    route.mode = 'open'; delete route.closedAt;
   }
   for (const peer of Object.values(s.peers).sort((a, b) => a.id.localeCompare(b.id))) {
     if (!peer.active) continue;
@@ -393,13 +421,13 @@ export function maintain(s: Ledger, now = Date.now()): void {
   }
 }
 export function resolveMessage(s: Ledger, ref: GroupRef, id: string, state: 'canceled' | 'dismissed', now = Date.now()): void {
-  groupOf(s, ref); const m = Object.hasOwn(s.messages, id) ? s.messages[id] : undefined; const terminalAt = lifecycleTime(now);
+  const group = groupOf(s, ref); const m = Object.hasOwn(s.messages, id) ? s.messages[id] : undefined; const terminalAt = lifecycleTime(now);
   if (!m || m.groupId !== ref.id || (state === 'canceled' ? m.state !== 'queued' : state !== 'dismissed' || m.state !== 'attempted')) fail('validation', 'Message is not eligible for that recovery action');
   m.state = state; m.terminalAt = terminalAt;
   if (m.kind === 'request') {
     m.conversationState = 'unanswered'; m.conversationTerminalAt = terminalAt;
     const key = routeKey(m.recipientPeerId, m.senderPeerId); const route = s.routes[key];
-    if (route?.mode === 'reply-only' && route.requestMessageId === m.id) s.routes[key] = { groupId: m.groupId, fromPeerId: m.recipientPeerId, toPeerId: m.senderPeerId, mode: 'closed' };
+    if (route?.mode === 'reply-only' && route.requestMessageId === m.id) closeProtocolRoute(s, group.id, m.recipientPeerId, m.senderPeerId, terminalAt);
   }
   if (m.kind === 'reply' && m.inReplyTo) {
     const request = s.messages[m.inReplyTo];
@@ -421,7 +449,7 @@ export function summary(s: Ledger, ref: GroupRef): GroupSummary {
   const g = groupOf(s, ref); const messages = Object.values(s.messages).filter(message => message.groupId === g.id);
   const queuedCount = messages.filter(message => message.state === 'queued').length;
   const attemptedCount = messages.filter(message => message.state === 'attempted').length;
-  return { group: refOf(g), mode: g.mode, roundNumber: g.round, limit: g.limit, used: g.used, remaining: g.limit - g.used,
+  return { group: refOf(g), auto: g.auto === true, mode: g.mode, roundNumber: g.round, limit: g.limit, used: g.used, remaining: g.limit - g.used,
     onlinePeers: Object.values(s.peers).filter(p => p.groupId === g.id && peerPresence(p) === 'online').length,
     pendingCount: queuedCount + attemptedCount, queuedCount, attemptedCount,
     awaitingReplyCount: messages.filter(message => message.kind === 'request' && message.conversationState === 'awaiting-reply').length,

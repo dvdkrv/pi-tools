@@ -235,6 +235,26 @@ test('attempted message and allowance survive suspend and resume until explicit 
   assert.equal((await replacement.getGroupSummary(f.g)).used, 2);
 });
 
+test('auto group sends, reserves, and observes without arm while forwarding the send budget', async t => {
+  const f = await brokerFixture(t); if (!f) return;
+  const a = await connectBackend(f.config, { initialize: true }); t.after(() => a.close());
+  const b = await connectBackend(f.config); t.after(() => b.close());
+  const group = await a.createGroup('host', { auto: true });
+  await a.join(group, { sessionId: 'auto-a', displayName: 'Auto Alice' });
+  await b.join(group, { sessionId: 'auto-b', displayName: 'Auto Bob' });
+
+  const sent = await a.send({ kind: 'notice', toPeerId: b.peer.id, text: 'automatic' }, 'auto-first', { sendsPerHour: 1 });
+  assert.equal(a.peer.credits, 0); assert.ok(Number.isFinite(a.peer.creditsAt));
+  const batch = await b.reserve();
+  assert.deepEqual(batch.map(item => item.message.id), [sent.id]);
+  assert.equal(batch[0].envelope.text, 'automatic');
+  await b.observe(batch);
+  assert.equal((await a.listMessages(group))[0].state, 'observed');
+  const summary = await a.getGroupSummary(group);
+  assert.equal(summary.auto, true); assert.deepEqual([summary.mode, summary.limit, summary.used, summary.remaining], ['paused', 0, 0, 0]);
+  await assert.rejects(a.send({ kind: 'notice', toPeerId: b.peer.id, text: 'spent' }, 'auto-second', { sendsPerHour: 1 }), /budget spent \(1 sends per hour\)/i);
+});
+
 test('real request reserves and delivers one exact reply over the durable backend', async t => {
   const f = await fixture(t); if (!f) return;
   await f.a.arm(f.g, 2);

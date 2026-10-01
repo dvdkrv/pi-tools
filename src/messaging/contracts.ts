@@ -2,11 +2,11 @@ export type MessageKind = 'legacy' | 'notice' | 'request' | 'reply';
 export type MessageState = 'queued' | 'attempted' | 'observed' | 'canceled' | 'dismissed' | 'expired' | 'terminal-unresolved';
 export type ConversationState = 'pending-delivery' | 'awaiting-reply' | 'reply-pending' | 'answered' | 'unanswered';
 export type RouteMode = 'open' | 'closed' | 'reply-only';
-export interface Route { groupId: string; fromPeerId: string; toPeerId: string; mode: RouteMode; requestMessageId?: string; observedAt?: number; expiresAt?: number }
+export interface Route { groupId: string; fromPeerId: string; toPeerId: string; mode: RouteMode; requestMessageId?: string; observedAt?: number; expiresAt?: number; closedAt?: number }
 export interface GroupRef { authorityId: string; id: string; label: string }
-export interface Group extends GroupRef { mode: 'paused' | 'armed' | 'exhausted'; round: number; limit: number; used: number }
+export interface Group extends GroupRef { mode: 'paused' | 'armed' | 'exhausted'; round: number; limit: number; used: number; auto?: boolean }
 export type PeerPresence = 'online' | 'stale' | 'suspended' | 'left';
-export interface Peer { id: string; groupId: string; sessionId: string; displayName: string; active: boolean; suspended: boolean; lastSeen: number; suspendedAt?: number; endedAt?: number; endReason?: 'leave' | 'revoke' | 'expired' }
+export interface Peer { id: string; groupId: string; sessionId: string; displayName: string; active: boolean; suspended: boolean; lastSeen: number; suspendedAt?: number; endedAt?: number; endReason?: 'leave' | 'revoke' | 'expired'; credits?: number; creditsAt?: number }
 export interface ParticipantLease { readonly peerId: string; readonly leaseId: string }
 export interface StoredPeer extends Peer { leaseId: string }
 export interface MessageStatus {
@@ -23,7 +23,7 @@ export interface Envelope {
 export interface Reservation { group: GroupRef; peerId: string; message: MessageStatus; attemptId: string; round: number; envelope?: Envelope }
 export interface SendInput { kind: Exclude<MessageKind, 'legacy'>; toPeerId: string; text: string; inReplyTo?: string }
 export interface GroupSummary {
-  group: GroupRef; mode: Group['mode']; roundNumber: number; limit: number; used: number; remaining: number;
+  group: GroupRef; auto: boolean; mode: Group['mode']; roundNumber: number; limit: number; used: number; remaining: number;
   onlinePeers: number; pendingCount: number; queuedCount: number; attemptedCount: number; awaitingReplyCount: number; terminalUnresolvedCount: number; reservedCount: number;
 }
 export interface MessagingReader { getGroupSummary(ref: GroupRef): Promise<GroupSummary | null>; close(): Promise<void> }
@@ -31,7 +31,7 @@ export interface MessagingBackend extends MessagingReader {
   readonly peer: Peer | undefined;
   readonly closed: boolean;
   listGroups(): Promise<GroupRef[]>;
-  createGroup(label: string): Promise<GroupRef>;
+  createGroup(label: string, options?: { auto?: boolean }): Promise<GroupRef>;
   join(ref: GroupRef, info: { sessionId: string; displayName: string }): Promise<Peer>;
   resume(ref: GroupRef, peerId: string, sessionId: string): Promise<Peer>;
   takeover(ref: GroupRef, peerId: string, sessionId: string): Promise<Peer>;
@@ -40,11 +40,11 @@ export interface MessagingBackend extends MessagingReader {
   heartbeat(displayName?: string): Promise<void>;
   arm(ref: GroupRef, limit: number): Promise<void>;
   pause(ref: GroupRef): Promise<void>;
-  maintain(ref: GroupRef, now?: number): Promise<void>;
+  maintain(ref: GroupRef, now?: number, options?: { routeCooldownMs?: number }): Promise<void>;
   peers(ref: GroupRef): Promise<Peer[]>;
   routes(ref: GroupRef): Promise<Route[]>;
   setRoute(ref: GroupRef, fromPeerId: string, toPeerId: string, mode: 'open' | 'closed', recoverReplyOnly?: boolean): Promise<void>;
-  send(input: SendInput, requestKey: string): Promise<MessageStatus>;
+  send(input: SendInput, requestKey: string, options?: { sendsPerHour?: number }): Promise<MessageStatus>;
   reserve(): Promise<Reservation[]>;
   observe(reservations: readonly Reservation[]): Promise<void>;
   listMessages(ref: GroupRef): Promise<MessageStatus[]>;
