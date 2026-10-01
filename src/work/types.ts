@@ -237,6 +237,7 @@ export type Brief = {
 	model: string | null;
 	modelReason: string | null;
 	from: string | null;
+	repo: string | null;
 };
 
 export type AcceptanceResult = { command: string; exitCode: number | null; summary: string };

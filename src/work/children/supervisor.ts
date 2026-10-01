@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import type { ChildrenConfig } from "../config.ts";
 import { repoChildrenConfig } from "../config.ts";
 import type { ShellRunner } from "../jobs.ts";
@@ -13,7 +13,7 @@ import { PARENT_SESSION_ENV } from "../session-tracker.ts";
 import type { ChildRunEnd, WorkStore } from "../store.ts";
 import type { AcceptanceResult, ChildRun, ChildWorktree } from "../types.ts";
 import type { BriefParams } from "./brief.ts";
-import { renderChildPrompt, renderFirstPrompt, resolveBrief } from "./brief.ts";
+import { leadShortId, renderChildPrompt, renderFirstPrompt, resolveBrief } from "./brief.ts";
 import { CHILD_RUN_ENV, PARENT_PID_ENV } from "./child-guard.ts";
 import { formatChildRun, lastLine, renderResult } from "./format.ts";
 import { addWorktree, commitsSince, defaultBranchRef, excludeChildWorktrees, gitText, isClean, isDefaultBranch, measureDiff, removeWorktree, runGit } from "./git.ts";
@@ -90,25 +90,41 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 	function delegate(leadSession: string, cwd: string, params: BriefParams): DelegateResult {
 		const config = deps.config();
 		const store = deps.store();
-		const repo = repoFromCwd(cwd, git) ?? null;
-		const resolved = resolveBrief(params, config, repo);
+		let previous = params.from ? find(leadSession, params.from) : undefined;
+		let requestedRoot: string | null = null;
+		if (params.repo !== undefined) {
+			const requested = params.repo.trim();
+			if (!isAbsolute(requested)) return { ok: false, message: "Refused: repo must be an absolute path." };
+			requestedRoot = gitText(git, requested, ["rev-parse", "--show-toplevel"]) ?? null;
+			if (!requestedRoot) return { ok: false, message: "Refused: repo must be inside a git repository." };
+		}
+		const previousRoot = previous?.brief.repo ?? null;
+		if (previous && params.repo !== undefined && requestedRoot !== previousRoot) return { ok: false, message: "Refused: from must use the same repository as the earlier run." };
+		const briefRoot = params.repo === undefined ? previousRoot : requestedRoot;
+		const runCwd = briefRoot ?? cwd;
+		const repo = repoFromCwd(runCwd, git) ?? null;
+		const resolved = resolveBrief({ ...params, repo: briefRoot ?? undefined }, config, repo);
 		if ("error" in resolved) return { ok: false, message: `Refused: ${resolved.error.replace(/\.?$/, ".")}` };
 		let prepare: ((id: string) => ChildWorktree) | undefined;
-		let previous: ChildRun | undefined;
 		let root: string | undefined;
 		if (resolved.brief.kind === "implement") {
-			root = gitText(git, cwd, ["rev-parse", "--show-toplevel"]);
+			root = briefRoot ?? gitText(git, cwd, ["rev-parse", "--show-toplevel"]);
 			if (!root) return { ok: false, message: "Refused: implement runs need a git repository." };
-			const leadBranch = gitText(git, cwd, ["branch", "--show-current"]);
-			if (!leadBranch) return { ok: false, message: "Refused: check out a branch first (HEAD is detached)." };
-			if (isDefaultBranch(leadBranch, defaultBranchRef(git, cwd))) {
-				return { ok: false, message: `Refused: ${leadBranch} is the default branch. Create a feature branch for this work first.` };
+			let leadBranch: string;
+			if (briefRoot) {
+				leadBranch = `lead/${leadShortId(leadSession)}`;
+			} else {
+				const current = gitText(git, cwd, ["branch", "--show-current"]);
+				if (!current) return { ok: false, message: "Refused: check out a branch first (HEAD is detached)." };
+				if (isDefaultBranch(current, defaultBranchRef(git, cwd))) return { ok: false, message: `Refused: ${current} is the default branch. Create a feature branch for this work first.` };
+				leadBranch = current;
 			}
 			excludeChildWorktrees(git, root);
-			if (!isClean(git, cwd)) {
-				return { ok: false, message: "Refused: your working tree has uncommitted changes. Commit them first, so the child starts from your current HEAD." };
+			if (!isClean(git, root)) {
+				const tree = briefRoot ? `${briefRoot} has` : "your working tree has";
+				return { ok: false, message: `Refused: ${tree} uncommitted changes. Commit them first, so the child starts from the current HEAD.` };
 			}
-			let start = git(cwd, ["rev-parse", "HEAD"]);
+			let start = git(root, ["rev-parse", "HEAD"]);
 			let baseCommit = start;
 			if (resolved.brief.from) {
 				previous = find(leadSession, resolved.brief.from);
@@ -138,8 +154,8 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 			removeWorktree(git, root, previous.worktree, previous.branch);
 			store.markChildRunDiscarded(previous.id, actorOf(previous));
 		}
-		launch(run, cwd, config);
-		const where = run.branch ? `on ${run.branch}` : "(read-only, in your working directory)";
+		launch(run, runCwd, config);
+		const where = run.branch ? `on ${run.branch}` : resolved.brief.repo ? `(read-only, in ${resolved.brief.repo})` : "(read-only, in your working directory)";
 		return { ok: true, run, message: [`Started ${run.id} ${where} with ${run.model}.`, ...resolved.notes, "Its result arrives as a message when it finishes; keep working meanwhile."].join(" ") };
 	}
 

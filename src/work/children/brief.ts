@@ -17,11 +17,16 @@ export type BriefParams = {
 	model?: string;
 	model_reason?: string;
 	from?: string;
+	repo?: string;
 };
 export type ResolvedBrief = { brief: Brief; model: string; budgetLines: number | null; budgetFiles: number | null; notes: string[] };
 
 const clean = (list: string[] | undefined): string[] => (list ?? []).map((entry) => entry.trim()).filter(Boolean);
 const positiveInteger = (value: number): boolean => Number.isInteger(value) && value > 0;
+
+export function leadShortId(sessionId: string): string {
+	return (sessionId.match(/[0-9a-f]/gi) ?? []).slice(-8).join("").toLowerCase();
+}
 
 export function resolveBrief(params: BriefParams, config: ChildrenConfig, repo: string | null): ResolvedBrief | { error: string } {
 	const goal = params.goal?.trim() ?? "";
@@ -57,7 +62,7 @@ export function resolveBrief(params: BriefParams, config: ChildrenConfig, repo: 
 		}
 	}
 	return {
-		brief: { goal, kind: params.kind, scope, nonGoals: clean(params.non_goals), acceptance, context, model, modelReason, from },
+		brief: { goal, kind: params.kind, scope, nonGoals: clean(params.non_goals), acceptance, context, model, modelReason, from, repo: params.repo?.trim() || null },
 		model: model ?? config.defaultModel,
 		budgetLines,
 		budgetFiles,

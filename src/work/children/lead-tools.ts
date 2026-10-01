@@ -10,7 +10,7 @@ export const LEAD_TOOLS: readonly string[] = ["delegate", "children", "steer_chi
 const EXPOSURE = "deferred" as const;
 export const CHILD_MESSAGE = "work-child";
 
-export const DELEGATE_DESCRIPTION = "Hand a task to a headless child agent and keep working; its result arrives later as one message. kind implement: the child works in its own worktree and branch from your current HEAD (commit first), may change only `scope`, and must pass `acceptance`, which are targeted test commands, never full suites. kind read-only: it investigates in your directory without editing. Keep briefs small: a one-sentence goal, a tight scope, and a budget only as large as needed. `from: C-<n>` continues an earlier run's branch.";
+export const DELEGATE_DESCRIPTION = "Hand a task to a headless child agent and keep working; its result arrives later as one message. kind implement: the child works in its own worktree and branch from your current HEAD (commit first), may change only `scope`, and must pass `acceptance`, which are targeted test commands, never full suites. kind read-only: it investigates without editing. Optional `repo` is an absolute git repository path to run in instead of your cwd. Keep briefs small: a one-sentence goal, a tight scope, and a budget only as large as needed. `from: C-<n>` continues an earlier run's branch.";
 export const CHILDREN_DESCRIPTION = "List your child runs: state, model, spend, diff against budget, acceptance results, and each child's note.";
 export const STEER_DESCRIPTION = "Send guidance to a running child. By default it arrives at the child's next quiet moment; urgent: true delivers it right after the child's current tool calls.";
 export const STOP_DESCRIPTION = "Stop a running child and end its process. Its worktree and branch are kept unless discard: true, which also removes them. Discard also works on finished runs.";
@@ -41,6 +41,7 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
 			model: Type.Optional(Type.String({ minLength: 1 })),
 			model_reason: Type.Optional(Type.String({ maxLength: 200 })),
 			from: Type.Optional(RUN_ID),
+			repo: Type.Optional(Type.String({ minLength: 1, description: "Absolute path to a git repository; the child runs there instead of the lead cwd." })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const result = deps.supervisor.delegate(ctx.sessionManager.getSessionId(), ctx.cwd, params);

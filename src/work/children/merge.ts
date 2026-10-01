@@ -6,7 +6,8 @@ import type { GitRunner } from "../rules.ts";
 import { errorMessage, redact } from "../secrets.ts";
 import type { WorkStore } from "../store.ts";
 import type { ChildRun } from "../types.ts";
-import { defaultBranchRef, gitText, isClean, isDefaultBranch, measureDiff, parseGithubRepo, removeWorktree, runGit } from "./git.ts";
+import { leadShortId } from "./brief.ts";
+import { addWorktree, defaultBranchRef, excludeChildWorktrees, gitText, isClean, isDefaultBranch, measureDiff, parseGithubRepo, removeWorktree, runGit } from "./git.ts";
 import { BUILT_IN_IGNORE } from "./guards.ts";
 
 export type MergeDeps = { store: WorkStore; config: ChildrenConfig; accounts: readonly GithubAccount[]; git?: GitRunner; gh?: GhRunner };
@@ -24,29 +25,53 @@ export async function mergeChild(deps: MergeDeps, leadSession: string, cwd: stri
 		run = undefined;
 	}
 	if (!run || run.leadSession !== leadSession || run.kind !== "implement" || !run.branch || !run.baseCommit) return `Refused: ${id} is not one of your implement runs.`;
-	const branch = gitText(git, cwd, ["branch", "--show-current"]);
-	if (!branch) return "Refused: check out your branch first (HEAD is detached).";
-	const defaultRef = defaultBranchRef(git, cwd);
-	if (isDefaultBranch(branch, defaultRef)) return `Refused: ${branch} is the default branch. Child work merges into a feature branch.`;
+	const repoRoot = run.brief.repo ?? null;
+	let mergeCwd = cwd;
+	let branch: string;
+	if (repoRoot) {
+		branch = `lead/${leadShortId(leadSession)}`;
+		mergeCwd = `${repoRoot}/.pi/worktrees/lead-${leadShortId(leadSession)}`;
+		try {
+			excludeChildWorktrees(git, repoRoot);
+			if (!gitText(git, mergeCwd, ["rev-parse", "--show-toplevel"])) {
+				if (gitText(git, repoRoot, ["rev-parse", "--verify", `refs/heads/${branch}`])) git(repoRoot, ["worktree", "add", "-q", mergeCwd, branch]);
+				else addWorktree(git, repoRoot, mergeCwd, branch, run.baseCommit);
+			}
+		} catch (error) {
+			return `Refused: could not prepare integration worktree ${mergeCwd}: ${errorMessage(error)}`;
+		}
+		const actual = gitText(git, mergeCwd, ["branch", "--show-current"]);
+		const integrationDefault = defaultBranchRef(git, mergeCwd);
+		if (actual && isDefaultBranch(actual, integrationDefault)) return `Refused: integration worktree branch ${actual} is the default branch.`;
+		if (actual !== branch) return `Refused: integration worktree must be on ${branch}, not ${actual ?? "detached HEAD"}.`;
+	} else {
+		const current = gitText(git, cwd, ["branch", "--show-current"]);
+		if (!current) return "Refused: check out your branch first (HEAD is detached).";
+		branch = current;
+		const leadDefault = defaultBranchRef(git, cwd);
+		if (isDefaultBranch(branch, leadDefault)) return `Refused: ${branch} is the default branch. Child work merges into a feature branch.`;
+	}
+	const defaultRef = defaultBranchRef(git, mergeCwd);
 	const merging: Merging = { run, branch, childBranch: run.branch, baseCommit: run.baseCommit, defaultRef };
 	// A merged run skips straight to the push and the PR, which retries a step that failed last time.
 	if (run.outcome !== "merged") {
-		const refusal = refusalFor(deps, git, cwd, merging);
+		const refusal = refusalFor(deps, git, mergeCwd, merging);
 		if (refusal) return `Refused: ${refusal}`;
 		try {
-			git(cwd, ["merge", "--no-ff", "-m", `Merge child ${run.id}: ${run.brief.goal}`, run.branch]);
+			git(mergeCwd, ["merge", "--no-ff", "-m", `Merge child ${run.id}: ${run.brief.goal}`, run.branch]);
 		} catch (error) {
 			try {
-				git(cwd, ["merge", "--abort"]);
+				git(mergeCwd, ["merge", "--abort"]);
 			} catch {
 				// Nothing to abort.
 			}
 			return `Refused: merging ${run.branch} failed and was aborted: ${errorMessage(error)}`;
 		}
-		removeWorktree(git, cwd, run.worktree, run.branch);
+		removeWorktree(git, repoRoot ?? mergeCwd, run.worktree, run.branch);
 		deps.store.markChildRunMerged(run.id, `session:${leadSession}`);
 	}
-	return `Merged ${run.id} into ${branch}. ${await publish(deps, git, cwd, merging)}`;
+	const location = repoRoot ? ` at ${mergeCwd}` : "";
+	return `Merged ${run.id} into ${branch}${location}. ${await publish(deps, git, mergeCwd, merging)}`;
 }
 
 function refusalFor(deps: MergeDeps, git: GitRunner, cwd: string, m: Merging): string | undefined {

@@ -85,6 +85,38 @@ test('delegate refuses a dirty tree, the default branch, and invalid briefs, and
   assert.equal(existsSync(l.log), false);
 });
 
+test('repo lets a lead outside git delegate from the default branch, and validates and inherits the repository', async () => {
+  const l = await lead({ behavior: { commit: COMMIT }, declared: null });
+  git(l.repo, 'checkout', '-q', 'main');
+  const outside = tempDir();
+  const session = '0195d5e8-7abc-7000-8000-1234deadbeef';
+  const head = git(l.repo, 'rev-parse', 'HEAD');
+  const first = l.supervisor.delegate(session, outside, implement({ repo: join(l.repo, 'src') }));
+  assert.equal(first.ok, true);
+  assert.deepEqual([first.run.brief.repo, first.run.repo, first.run.branch, first.run.baseCommit], [l.repo, l.repo.split('/').at(-1), 'child/lead/deadbeef/C-1', head]);
+  assert.equal(first.run.worktree, join(l.repo, '.pi', 'worktrees', 'child-C-1'));
+  await until(() => l.messages.length === 1);
+  const second = l.supervisor.delegate(session, outside, implement({ from: 'C-1' }));
+  assert.equal(second.ok, true);
+  assert.equal(second.run.brief.repo, l.repo);
+  const other = gitRepo();
+  assert.match(l.supervisor.delegate(session, outside, implement({ from: 'C-2', repo: other })).message, /^Refused: from must use the same repository/);
+  assert.match(l.supervisor.delegate(session, outside, implement({ repo: 'relative' })).message, /^Refused: repo must be an absolute path/);
+  assert.match(l.supervisor.delegate(session, outside, implement({ repo: outside })).message, /^Refused: repo must be inside a git repository/);
+  await l.supervisor.stop(session, 'C-2', true);
+});
+
+test('a repo read-only child runs at the repository top level', async () => {
+  const l = await lead();
+  const outside = tempDir();
+  const result = l.supervisor.delegate('0195d5e8-7abc-7000-8000-1234deadbeef', outside, { goal: 'Map it', kind: 'read-only', repo: join(l.repo, 'src') });
+  assert.equal(result.ok, true);
+  await until(() => l.messages.length === 1);
+  const [start] = readJsonl(l.log);
+  assert.equal(start.cwd, l.repo);
+  assert.equal(result.run.brief.repo, l.repo);
+});
+
 test('a child that settles without declaring done is incomplete, and acceptance does not run', async () => {
   const l = await lead({ behavior: { commit: COMMIT }, declared: null });
   l.supervisor.delegate('lead-1', l.repo, implement());

@@ -41,7 +41,8 @@ function setup({ runtime, env = {}, mode = 'tui', supervisor = {}, toolSearch = 
 test('a lead gets five static delegation tools, and a child gets none', async () => {
   const lead = setup({ runtime: await memoryRuntime() });
   for (const name of ['delegate', 'children', 'steer_child', 'stop_child', 'merge_child']) assert.ok(lead.tools.has(name), name);
-  assert.deepEqual(Object.keys(lead.tools.get('delegate').parameters.properties).sort(), ['acceptance', 'budget', 'context', 'from', 'goal', 'kind', 'model', 'model_reason', 'non_goals', 'scope']);
+  assert.deepEqual(Object.keys(lead.tools.get('delegate').parameters.properties).sort(), ['acceptance', 'budget', 'context', 'from', 'goal', 'kind', 'model', 'model_reason', 'non_goals', 'repo', 'scope']);
+  assert.equal(lead.tools.get('delegate').parameters.properties.repo.description, 'Absolute path to a git repository; the child runs there instead of the lead cwd.');
   const child = setup({ runtime: await memoryRuntime(), env: { PI_WORK_CHILD_RUN: 'C-1' }, mode: 'rpc' });
   assert.equal([...child.tools.keys()].some((name) => ['delegate', 'children', 'steer_child', 'stop_child', 'merge_child'].includes(name)), false);
 });
