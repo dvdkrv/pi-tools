@@ -11,7 +11,7 @@ export interface MessagingSettings { autoJoin: boolean; sendsPerHour: number; pa
 export type RegistryLiveness = 'live' | 'ended' | 'unknown';
 export interface MessagingRegistry { displayName(sessionId: string, cwd: string): string | undefined; liveness(sessionId: string): RegistryLiveness }
 export interface MessagingAudit { record(entry: MessageLogEntry): void; openIds(): string[]; setStates(updates: { id: string; state: string; at: string }[]): void; prune(before: string): void }
-export interface MessagingOptions { settings?: () => MessagingSettings; registry?: MessagingRegistry; audit?: MessagingAudit; env?: NodeJS.ProcessEnv }
+export interface MessagingOptions { settings?: () => MessagingSettings; registry?: MessagingRegistry; audit?: MessagingAudit; env?: NodeJS.ProcessEnv; heartbeatMs?: number }
 export const INERT_MESSAGING_SETTINGS: MessagingSettings = { autoJoin: false, sendsPerHour: 10, paused: false, retentionDays: 30, routeCooldownMinutes: 10 };
 
 export function liveMessagingOptions(): MessagingOptions {

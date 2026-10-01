@@ -234,14 +234,14 @@ test('tree navigation suspends participation and explicit rejoin resumes the sam
   assert.equal(f.lifecycle.resumes, 1); assert.equal(f.delivered.length, 0); assert.equal(f.lifecycle.bodyReads, 0);
 });
 
-test('session replacement suspends while final shutdown leaves the identity', async t => {
+test('session replacement and shutdown suspend the same resumable identity', async t => {
   const f = fixture(t); await f.commands.get('messages').handler('join review', f.ctx); const id = f.backend.peer.id;
   await f.events.get('session_start')({ reason: 'reload' }, f.ctx);
   assert.equal(f.backend.peer, undefined); assert.equal(f.state.peers[id].active, true); assert.equal(f.state.peers[id].suspended, true);
   await f.commands.get('messages').handler('join review', f.ctx); assert.equal(f.backend.peer.id, id);
   await f.events.get('session_shutdown')({ reason: 'quit' }, f.ctx);
-  assert.equal(f.state.peers[id].active, false);
-  assert.equal(f.lifecycle.suspends, 1); assert.equal(f.lifecycle.leaves, 1);
+  assert.equal(f.state.peers[id].active, true); assert.equal(f.state.peers[id].suspended, true);
+  assert.equal(f.lifecycle.suspends, 2); assert.equal(f.lifecycle.leaves, 0);
 });
 
 test('failed suspension closes local state without reinterpreting it as final leave', async t => {

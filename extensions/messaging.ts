@@ -30,7 +30,7 @@ export function registerMessaging(
   const env = options.env ?? {}; const child = Boolean(env.PI_WORK_CHILD_RUN || env.PI_WORK_PARENT_SESSION);
   let backend: MessagingBackend | undefined; let selected: GroupRef | undefined; let joined: GroupRef | undefined;
   let knownGroupLabels: string[] = []; let runtime: MessagingRuntime | undefined; let epoch = 0; let commandBusy = false;
-  let localPaused = false; let lastPrune = 0; let lastRevoke = 0;
+  let localPaused = false; let autoJoined = false; let lastPrune = 0; let lastRevoke = 0;
   const settings = (): MessagingSettings => { try { return options.settings?.() ?? INERT_MESSAGING_SETTINGS; } catch { return INERT_MESSAGING_SETTINGS; } };
   const tui = (ctx: ExtensionContext) => { if (ctx.mode !== 'tui') fail('mode', 'Messaging participation and controls require TUI mode'); };
   const registryLiveness = (sessionId: string) => { try { return options.registry?.liveness(sessionId) ?? 'unknown'; } catch { return 'unknown'; } };
@@ -82,13 +82,13 @@ export function registerMessaging(
     if (!lastPrune || now - lastPrune >= 60 * 60_000) {
       lastPrune = now; try { options.audit?.prune(new Date(now - settings().retentionDays * 24 * 60 * 60_000).toISOString()); } catch { /* best effort */ }
     }
-    if (group.label === 'host' && (!lastRevoke || now - lastRevoke >= 60_000)) {
+    if (autoJoined && (!lastRevoke || now - lastRevoke >= 60_000)) {
       lastRevoke = now;
       try { for (const peer of await raw.peers(group)) if (peer.active && peer.id !== self.id && peerPresence(peer, now) !== 'online' && registryLiveness(peer.sessionId) === 'ended') await raw.revoke(group, peer.id); } catch { /* best effort */ }
     }
   }
-  function startRuntime(raw: MessagingBackend, ref: GroupRef, ctx: ExtensionContext): void {
-    selected = joined = ref; lastPrune = 0; lastRevoke = 0;
+  function startRuntime(raw: MessagingBackend, ref: GroupRef, ctx: ExtensionContext, automatic = false): void {
+    selected = joined = ref; autoJoined = automatic; lastPrune = 0; lastRevoke = 0;
     runtime = new MessagingRuntime(raw, ref, {
       ready: () => ctx.isIdle() && !paused(), tick: () => tick(raw, ref, ctx.cwd),
       deliver: (message, sendOptions) => pi.sendMessage(message, sendOptions),
@@ -100,12 +100,12 @@ export function registerMessaging(
           : `messages ${summary.group.label}: ${summary.mode}, ${summary.remaining} left, ${summary.queuedCount} queued, ${summary.attemptedCount} attempted, ${summary.awaitingReplyCount} awaiting reply`);
       },
       error: message => { ctx.ui.setStatus('pi-messaging', 'messages: stopped — inspect inbox'); ctx.ui.notify(message, 'warning'); },
-    });
+    }, options.heartbeatMs);
     try { options.audit?.prune(new Date(Date.now() - settings().retentionDays * 24 * 60 * 60_000).toISOString()); lastPrune = Date.now(); } catch { /* best effort */ }
     runtime.start();
   }
   async function detach(close: boolean, disposition: 'suspend' | 'leave' = 'suspend'): Promise<void> {
-    const current = runtime; const old = backend; runtime = undefined; joined = undefined; let mustClose = close;
+    const current = runtime; const old = backend; runtime = undefined; joined = undefined; autoJoined = false; let mustClose = close;
     try { if (current) await current.stop(disposition); else if (old?.peer) await (disposition === 'leave' ? old.leave() : old.suspend()); }
     catch (error) { mustClose = true; throw error; }
     finally { if (mustClose) { if (backend === old) backend = undefined; await old?.close(); } }
@@ -122,14 +122,17 @@ export function registerMessaging(
       else await b.join(group, { sessionId, displayName: displayName(sessionId, ctx.cwd) });
     }
     if (generation !== epoch) fail('participation', 'Session changed during messaging participation');
-    startRuntime(b, group, ctx); return true;
+    startRuntime(b, group, ctx, true); return true;
   }
   async function begin(ctx: ExtensionContext): Promise<void> {
     try { if (await autoJoin(ctx)) return; await ensure(); }
     catch (error) { try { await detach(true); } catch { /* preserve original failure */ } if (ctx.hasUI) ctx.ui.notify(`Messaging is unavailable; /messages will retry when requested. ${safeText(error instanceof Error ? error.message : String(error))}`, 'warning'); }
   }
-  pi.on('session_start', async (_event, ctx) => { epoch++; knownGroupLabels = []; selected = undefined; try { await detach(true); } catch { /* begin reports the new state */ } await begin(ctx); });
-  pi.on('session_shutdown', async (event) => { epoch++; knownGroupLabels = []; await detach(true, event.reason === 'reload' ? 'suspend' : 'leave'); });
+  pi.on('session_start', async (_event, ctx) => {
+    const replaceAutoSession = autoJoined && backend?.peer?.sessionId !== ctx.sessionManager.getSessionId();
+    epoch++; knownGroupLabels = []; selected = undefined; try { await detach(true, replaceAutoSession ? 'leave' : 'suspend'); } catch { /* begin reports the new state */ } await begin(ctx);
+  });
+  pi.on('session_shutdown', async (event) => { const leave = autoJoined && event.reason !== 'reload'; epoch++; knownGroupLabels = []; await detach(true, leave ? 'leave' : 'suspend'); });
   pi.on('session_before_tree', async (_event, ctx) => { epoch++; await detach(false); if (ctx.mode === 'tui' && !settings().autoJoin) ctx.ui.notify('Messaging detached for tree navigation; explicitly rejoin afterward.', 'info'); });
   pi.on('session_tree', async (_event, ctx) => { try { await autoJoin(ctx); } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Messaging is unavailable after tree navigation. ${safeText(error instanceof Error ? error.message : String(error))}`, 'warning'); } });
   pi.on('agent_start', () => { void runtime?.wake(); }); pi.on('agent_end', () => { void runtime?.wake(); }); pi.on('agent_settled', () => { void runtime?.wake(); });
