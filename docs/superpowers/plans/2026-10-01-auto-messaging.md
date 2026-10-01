@@ -88,3 +88,23 @@ Files: `extensions/messaging.ts`, `src/messaging/*.ts` (not policy/backend seman
 - Budget: `send` passes `sendsPerHour`; maintenance passes `routeCooldownMs`. The status line shows `messages <name>: <n>/<cap> sends left, <q> queued` or `messages <name>: paused`.
 - Audit: every accepted send (tool or `/messages`) is logged with the body; on heartbeat, open rows are updated from `listMessages` states; rows older than `retentionDays` are pruned at join and hourly. No tool returns bodies.
 - Existing `/messages` subcommands keep working for manual groups; `arm` is not needed for the host group.
+
+### Task D details
+
+- Options (`src/messaging/host.ts` exports the types and `liveMessagingOptions()`):
+
+```ts
+export interface MessagingSettings { autoJoin: boolean; sendsPerHour: number; paused: boolean | string[]; retentionDays: number; routeCooldownMinutes: number }
+export type RegistryLiveness = 'live' | 'ended' | 'unknown';
+export interface MessagingRegistry { displayName(sessionId: string, cwd: string): string | undefined; liveness(sessionId: string): RegistryLiveness }
+export interface MessagingAudit { record(entry: MessageLogEntry): void; openIds(): string[]; setStates(updates: { id: string; state: string; at: string }[]): void; prune(before: string): void }
+export interface MessagingOptions { settings?: () => MessagingSettings; registry?: MessagingRegistry; audit?: MessagingAudit; env?: NodeJS.ProcessEnv }
+```
+
+  Omitted options are inert: settings `{ autoJoin: false, sendsPerHour: 10, paused: false, retentionDays: 30, routeCooldownMinutes: 10 }`, no registry (names fall back to the cwd basename, presence is heartbeat-only), no audit, and `env = {}`. Tests (and child agents running them, whose real environment has `PI_WORK_CHILD_RUN`) therefore never see live state. `liveMessagingOptions()` reads `messagingConfig(loadWorkConfig().config)` (re-read at most every 5 seconds), opens `WorkStore` at `join(defaultDataDir(), 'work.db')` lazily, derives names with `sessionDisplayName(session.tmuxWindow, repoFromCwd(cwd), cwd)` (repo cached per cwd; result trimmed to a valid display name of at most 64 characters), liveness with `pidAlive(session.pid, session.tmuxPane)` (`live`), a known but dead session (`ended`), or no row (`unknown`), and passes `env: process.env`. Every registry or audit failure is caught; messaging keeps working without it.
+- The default export is `pi => registerMessaging(pi, configuredBackend, () => ensureBroker(), liveMessagingOptions())`.
+- Wrap the connected backend once so every caller (tool, `/messages` UI, runtime) passes `{ sendsPerHour }` to `send` and `{ routeCooldownMs }` to `maintain`, and so every accepted send is recorded in the audit log (sender and recipient names and session ids from `peers()`; the group label; `state` from the returned status; `at` from `createdAt`).
+- The runtime heartbeat (every 5 s) also runs a best-effort extension tick: re-read settings and pause state (wake on resume), refresh the display name (`heartbeat(name)` only when it changed), sync open audit rows from `listMessages` states, prune audit rows older than `retentionDays` hourly, and about once a minute revoke host-group peers that are not online and whose registry liveness is `ended`. Tick failures never stop messaging.
+- `ready()` is false while paused, so nothing is reserved; sends while paused fail with `fail('paused', 'Messaging is paused by the user')`.
+- `peer_message` without participation fails with `Messaging is not active in this session`. Results never contain bodies. `status` adds `budget: { left, perHour }` (left floored) for auto groups. `peers` presence is `offline` when registry liveness is `ended`.
+- The tool schema drops `rename` and `displayName`; guidance drops the rename sentence and the words "explicitly joined"; descriptions stay static strings (cache stability). Update the affected extension, quiet, and cache-stability tests and `scripts/messaging-live-smoke.mjs` (drop rename assertions; join via auto-join options).
