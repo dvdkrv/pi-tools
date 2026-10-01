@@ -14,7 +14,7 @@ const eventCount = (store) => store.listEvents().length;
 test('opening an empty database applies migrations and creates misc', async () => {
   const store = await memoryStore();
   assert.deepEqual(store.listProjects().map((p) => p.slug), ['misc']);
-  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 3);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 4);
 });
 
 test('a database with a newer schema is refused and left unmodified', () => {
