@@ -3,6 +3,7 @@ import { checkJobs, checkStaleJobs, isStale, jobDetails, stopJob } from "../jobs
 import type { KeyState, Move } from "../keymap.ts";
 import { decodeKey, INITIAL_KEY_STATE, keyStep, moveIndex, splitKeys } from "../keymap.ts";
 import type { PidReaders } from "../liveness.ts";
+import { messageStateLabel } from "../messages.ts";
 import type { TmuxRunner } from "../planner.ts";
 import { shellQuote } from "../planner.ts";
 import { reopenSession, runRestore, selectForRestore } from "../restore.ts";
@@ -16,7 +17,7 @@ import { formatTranscript, readTranscript } from "../transcript.ts";
 import type { TriageActionUi, TriageKey } from "../triage-actions.ts";
 import { runTriageAction, TRIAGE_ACTIONS } from "../triage-actions.ts";
 import { candidateLabel, candidateSummary, openCandidates } from "../triage.ts";
-import type { Candidate, Item, Job } from "../types.ts";
+import type { Candidate, Item, Job, MessageLogEntry } from "../types.ts";
 import { OPEN_ITEM_STATUSES } from "../types.ts";
 import { recordUsage } from "../usage.ts";
 import type { HostSample, HostSnapshot } from "./host.ts";
@@ -61,7 +62,7 @@ export const HELP_TEXT = [
 	"Tab / Shift-Tab  next / previous section (also ] and [)",
 	"/ then n / N     filter as you type, then next / previous match; Esc clears",
 	"Enter            jump to a session, reopen a closed or crashed one, open triage,",
-	"                 show a child agent's transcript, or show job details",
+	"                 show a child transcript, job details, or a message",
 	"L                link the session to an item",
 	"c                check the selected job now",
 	"x then y         stop the selected job, or a running child agent (SIGTERM)",
@@ -76,6 +77,13 @@ const CPU_WARMUP_MS = 1000;
 const TRIAGE_PAGE = 10;
 const TRIAGE_HINTS = "j/k move · a accept · m merge · d dismiss · z snooze · A all from source · p promote · enter details · esc back";
 const itemLabel = (item: Item): string => `${item.id} ${item.title}  #${item.project}`;
+
+function messageDetail(entry: MessageLogEntry): string {
+	const at = new Date(entry.at);
+	const pad = (value: number): string => String(value).padStart(2, "0");
+	const time = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+	return `${time}  ${oneLine(entry.senderName)} → ${oneLine(entry.recipientName)}  ${entry.kind}  ${oneLine(messageStateLabel(entry.state))}\n${entry.body}`;
+}
 
 function jobOf(row: DashRow | undefined): Job | undefined {
 	return row?.kind === "job" || row?.kind === "alert" ? row.job : undefined;
@@ -137,7 +145,9 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 		panes = listPanes(deps.tmux);
 		sessions = loadSessions(store, panes, deps.readers, repoOf);
 		const triageCount = deps.runtime.config.dashboard?.showTriage === true ? openCandidates(store).length : 0;
-		model = buildDashModel({ sessions, triageCount, jobs: store.listJobs(), now: store.clock() });
+		const now = store.clock();
+		const messages = store.listMessageLog({ since: new Date(now.getTime() - 86_400_000).toISOString(), limit: 20 });
+		model = buildDashModel({ sessions, triageCount, jobs: store.listJobs(), messages, now });
 		const rows = visibleRows();
 		if (!rows.some((row) => row.key === selected)) selected = rows[0]?.key ?? null;
 		refreshedAt = store.clock();
@@ -346,6 +356,21 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 			const job = row.job;
 			track("details");
 			await ask<void>((resolve) => messageBox(`Job ${job.id}`, jobDetails(store, job, store.clock()), resolve));
+			return;
+		}
+		if (row.kind === "message") {
+			const thread = store.messageThread(row.message.id);
+			if (!thread) {
+				message = "This message is no longer available";
+				return;
+			}
+			const sections = [messageDetail(thread.message)];
+			if (thread.message.kind === "reply" && thread.request) sections.push("--- request ---", messageDetail(thread.request));
+			if (thread.message.kind === "request") {
+				for (const reply of thread.replies) sections.push("--- reply ---", messageDetail(reply));
+			}
+			track("message");
+			await ask<void>((resolve) => messageBox("Message (read-only)", sections.join("\n\n"), resolve));
 			return;
 		}
 		if (row.kind === "ended" || row.kind === "older") return;

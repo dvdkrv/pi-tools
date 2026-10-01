@@ -2,9 +2,9 @@ import type { PidReaders, ProbedSession } from "../liveness.ts";
 import { probeSessions } from "../liveness.ts";
 import type { WorkStore } from "../store.ts";
 import type { TmuxPane } from "../tmux.ts";
-import type { ChildRun, Job, Session } from "../types.ts";
+import type { ChildRun, Job, MessageLogEntry, Session } from "../types.ts";
 
-export type SectionId = "decisions" | "waiting" | "working" | "jobs" | "other";
+export type SectionId = "decisions" | "waiting" | "working" | "jobs" | "messages" | "other";
 export type SessionEntry = ProbedSession & { itemId: string | null; itemTitle: string | null; run?: ChildRun | null; repo?: string | null };
 export type DashRow =
 	| { kind: "session"; key: string; session: SessionEntry; depth: 0 | 1 }
@@ -12,11 +12,12 @@ export type DashRow =
 	| { kind: "older"; key: string; count: number }
 	| { kind: "triage"; key: string; count: number }
 	| { kind: "job"; key: string; job: Job }
-	| { kind: "alert"; key: string; job: Job };
+	| { kind: "alert"; key: string; job: Job }
+	| { kind: "message"; key: string; message: MessageLogEntry };
 export type DashSection = { id: SectionId; title: string; rows: DashRow[] };
 // older: the Other sessions rows that the "+N older" row stands for; a filter shows them instead.
 export type DashModel = { sections: DashSection[]; now: Date; older?: DashRow[] };
-export type DashInput = { sessions: readonly SessionEntry[]; triageCount: number; jobs?: readonly Job[]; now: Date };
+export type DashInput = { sessions: readonly SessionEntry[]; triageCount: number; jobs?: readonly Job[]; messages?: readonly MessageLogEntry[]; now: Date };
 
 export const RECENT_MS = 7 * 86_400_000;
 // Ended sessions older than this fold into one "+N older" row under Other sessions.
@@ -79,6 +80,7 @@ export function buildDashModel(input: DashInput): DashModel {
 	const waiting = rows(live.filter((s) => s.status === "waiting-external").sort(byStatusAt));
 	const working = rows(live.filter((s) => s.status === "working").sort(byStatusAt));
 	const jobRows: DashRow[] = jobs.filter((job) => !alerted.has(job.id)).map((job) => ({ kind: "job", key: `job:${job.id}`, job }));
+	const messageRows: DashRow[] = (input.messages ?? []).map((message) => ({ kind: "message", key: `message:${message.id}`, message }));
 	const done = live.filter((s) => s.status === "done").sort((a, b) => byStatusAt(b, a));
 	const idle = live.filter(isIdle).sort(byStart);
 	const ended = top.filter((s) => s.liveness !== "live").sort(byRecentActivity);
@@ -102,6 +104,7 @@ export function buildDashModel(input: DashInput): DashModel {
 			{ id: "waiting", title: "Waiting", rows: waiting },
 			{ id: "working", title: "Working", rows: working },
 			{ id: "jobs", title: "Jobs", rows: jobRows },
+			{ id: "messages", title: "Messages", rows: messageRows },
 			{ id: "other", title: "Other sessions", rows: other },
 		],
 	};

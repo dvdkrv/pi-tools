@@ -45,13 +45,13 @@ const HOST = {
 
 test('sections order sessions, nest children under their parent, and drop old ended sessions', () => {
   const m = model();
-  assert.deepEqual(m.sections.map((s) => s.id), ['decisions', 'waiting', 'working', 'jobs', 'other']);
+  assert.deepEqual(m.sections.map((s) => s.id), ['decisions', 'waiting', 'working', 'jobs', 'messages', 'other']);
   assert.deepEqual(m.sections[0].rows.map((r) => r.key), ['session:d1', 'session:c1', 'session:d2', 'triage']);
   assert.equal(m.sections[0].rows[1].depth, 1);
   assert.deepEqual(m.sections[1].rows.map((r) => r.key), ['session:w1']);
   assert.deepEqual(m.sections[2].rows, []);
   assert.deepEqual(m.sections[3].rows, []);
-  assert.deepEqual(m.sections[4].rows.map((r) => r.key), ['session:o1', 'session:o3', 'session:o2']);
+  assert.deepEqual(m.sections[5].rows.map((r) => r.key), ['session:o1', 'session:o3', 'session:o2']);
   assert.equal(buildDashModel({ sessions: SESSIONS, triageCount: 0, now: NOW }).sections[0].rows.some((r) => r.kind === 'triage'), false);
 });
 
@@ -62,7 +62,7 @@ test('never-turned automatic sessions leave Decisions and display idle without t
   ];
   const m = buildDashModel({ sessions, triageCount: 0, now: NOW });
   assert.deepEqual(m.sections[0].rows, []);
-  assert.deepEqual(m.sections[4].rows.map((r) => r.key), ['session:fresh', 'session:legacy']);
+  assert.deepEqual(m.sections[5].rows.map((r) => r.key), ['session:fresh', 'session:legacy']);
   const lines = plain(renderDash(m, state({ selected: null }), 80, 20, plainStyle));
   assert.ok(lines.some((line) => /^ {2}idle\s+x\s+-\s+0s$/.test(line)), lines.join('\n'));
   assert.equal(lines.some((line) => line.includes('new session')), false);
@@ -80,7 +80,7 @@ test('a live child follows its parent into any section, and a live orphan is lis
   });
   assert.deepEqual(m.sections[0].rows, []);
   assert.deepEqual(m.sections[1].rows.map((r) => [r.key, r.depth]), [['session:p', 0], ['session:k', 1]]);
-  assert.deepEqual(m.sections[4].rows.map((r) => [r.key, r.depth]), [['session:lost', 0]]);
+  assert.deepEqual(m.sections[5].rows.map((r) => [r.key, r.depth]), [['session:lost', 0]]);
 });
 
 test('ended children fold under a shown lead after its live children', () => {
@@ -115,7 +115,7 @@ test('ended orphans from different missing leads share one fold while live orpha
     entry({ id: 'ended-a', parentSession: 'missing-a', headless: true, tmuxPane: null, liveness: 'closed', alive: false }),
     entry({ id: 'ended-b', parentSession: 'missing-b', headless: true, tmuxPane: null, liveness: 'crashed', alive: false }),
   ];
-  const other = buildDashModel({ sessions, triageCount: 0, now: NOW }).sections[4].rows;
+  const other = buildDashModel({ sessions, triageCount: 0, now: NOW }).sections[5].rows;
   assert.deepEqual(other.map((r) => [r.kind, r.key, r.depth, r.count]), [
     ['session', 'session:live', 0, undefined],
     ['ended', 'ended:orphans', 0, 2],
@@ -133,7 +133,7 @@ test('Other sessions folds top-level sessions older than 24 hours but a filter r
       entry({ id: 'live-old', tmuxWindow: 'still-live', status: 'done', lastTurnAt: ago(3000) }),
     ],
   });
-  assert.deepEqual(m.sections[4].rows.map((r) => [r.kind, r.key, r.count]), [
+  assert.deepEqual(m.sections[5].rows.map((r) => [r.kind, r.key, r.count]), [
     ['session', 'session:live-old', undefined],
     ['session', 'session:recent', undefined],
     ['older', 'older', 1],

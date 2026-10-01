@@ -27,6 +27,7 @@ function rowHints(row: DashRow | undefined): string[] {
 	if (row.kind === "ended" || row.kind === "older") return [];
 	if (row.kind === "triage") return ["enter triage"];
 	if (row.kind === "job" || row.kind === "alert") return row.job.stoppedAt ? ["enter details", "D delete"] : ["enter details", "c check", "x stop"];
+	if (row.kind === "message") return ["enter message"];
 	const session = row.session;
 	if (session.parentSession) return session.alive ? ["enter transcript", "x stop"] : ["enter transcript"];
 	if (session.liveness === "live") return [session.tmuxPane ? "enter jump" : "enter transcript", "L link"];
@@ -68,6 +69,17 @@ export function rowCells(row: DashRow, now: Date, wide: boolean): Cells {
 			note: oneLine(job.lastCheckOutput ?? ""),
 		};
 	}
+	if (row.kind === "message") {
+		const message = row.message;
+		const firstLine = message.body.split("\n").map(oneLine).find(Boolean) ?? "";
+		return {
+			label: message.kind,
+			window: oneLine(`${message.senderName} → ${message.recipientName}`),
+			item: new Date(message.at).toTimeString().slice(0, 5),
+			age: formatAge(now.getTime() - Date.parse(message.at)),
+			note: firstLine,
+		};
+	}
 	const s = row.session;
 	const child = s.parentSession !== null;
 	const since = child || s.liveness !== "live" ? lastActivity(s) : s.statusAt;
@@ -81,7 +93,8 @@ export function rowCells(row: DashRow, now: Date, wide: boolean): Cells {
 export function rowMatches(row: DashRow, filter: string, now: Date): boolean {
 	if (!filter) return true;
 	const cells = rowCells(row, now, true);
-	return [cells.label, cells.window, cells.item, cells.note].join(" ").toLowerCase().includes(filter.toLowerCase());
+	const body = row.kind === "message" ? row.message.body : "";
+	return [cells.label, cells.window, cells.item, cells.note, body].join(" ").toLowerCase().includes(filter.toLowerCase());
 }
 
 // A filter searches the rows behind "+N older" too, so old sessions stay reachable.
