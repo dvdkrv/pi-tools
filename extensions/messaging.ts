@@ -112,7 +112,7 @@ export function registerMessaging(
   }
   async function autoJoin(ctx: ExtensionContext): Promise<boolean> {
     if (child || !settings().autoJoin || ctx.mode !== 'tui' || !ctx.sessionManager.getSessionFile()) return false;
-    const generation = epoch; const b = await connect(generation); const group = await b.createGroup('host', { auto: true });
+    const generation = epoch; const b = await connect(generation); const group = await b.createGroup('host', { auto: true, routeCooldownMs: settings().routeCooldownMinutes * 60_000 });
     const sessionId = ctx.sessionManager.getSessionId();
     if (!b.peer) {
       const own = (await b.peers(group)).filter(peer => peer.active && peer.sessionId === sessionId);
@@ -125,8 +125,9 @@ export function registerMessaging(
     startRuntime(b, group, ctx, true); return true;
   }
   async function begin(ctx: ExtensionContext): Promise<void> {
+    const generation = epoch;
     try { if (await autoJoin(ctx)) return; await ensure(); }
-    catch (error) { try { await detach(true); } catch { /* preserve original failure */ } if (ctx.hasUI) ctx.ui.notify(`Messaging is unavailable; /messages will retry when requested. ${safeText(error instanceof Error ? error.message : String(error))}`, 'warning'); }
+    catch (error) { if (generation !== epoch) return; try { await detach(true); } catch { /* preserve original failure */ } if (ctx.hasUI) ctx.ui.notify(`Messaging is unavailable; /messages will retry when requested. ${safeText(error instanceof Error ? error.message : String(error))}`, 'warning'); }
   }
   pi.on('session_start', async (_event, ctx) => {
     const replaceAutoSession = autoJoined && backend?.peer?.sessionId !== ctx.sessionManager.getSessionId();

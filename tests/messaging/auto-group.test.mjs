@@ -116,16 +116,55 @@ test('cooldown reopens protocol closures but never a human-closed route', () => 
   p.maintain(f.state, 10_000, { routeCooldownMs: 1 }); assert.equal(f.state.routes[humanKey].mode, 'closed');
 });
 
+test('an auto group keeps its configured cooldown during default maintenance', () => {
+  const f = fixture(); const cooldown = 60 * 60_000;
+  p.createGroup(f.state, 'host', { auto: true, routeCooldownMs: cooldown });
+  assert.equal(f.state.groups[f.group.id].routeCooldownMs, cooldown);
+  notice(f, 'notice', 0);
+  const key = p.routeKey(f.b.id, f.a.id);
+  assert.equal(p.canReceive(f.state, lease(f.a), 10 * 60_000), true);
+  assert.equal(f.state.routes[key].mode, 'closed');
+  p.maintain(f.state, cooldown);
+  assert.equal(f.state.routes[key].mode, 'open');
+});
+
+test('human-held reverse routes return to closed after a request ends', () => {
+  for (const ending of ['reply', 'expiry', 'cancel']) {
+    const f = fixture(); const reverseKey = p.routeKey(f.b.id, f.a.id);
+    p.setRoute(f.state, f.group, f.b.id, f.a.id, 'closed');
+    assert.equal(f.state.routes[reverseKey].held, true);
+    const sent = request(f, `request-${ending}`, 100);
+    assert.equal(f.state.routes[reverseKey].mode, 'reply-only');
+    assert.equal(f.state.routes[reverseKey].held, true);
+    if (ending === 'reply') {
+      const reservation = p.admit(f.state, lease(f.b), sent.id, 200); p.observe(f.state, lease(f.b), reservation, 300);
+      p.prepareMessage(f.state, lease(f.b), { kind: 'reply', toPeerId: f.a.id, text: 'done', inReplyTo: sent.id }, 'reply', 400);
+    } else if (ending === 'expiry') p.maintain(f.state, 100 + p.QUEUED_TTL_MS);
+    else p.resolveMessage(f.state, f.group, sent.id, 'canceled', 400);
+    assert.deepEqual(f.state.routes[reverseKey], { groupId: f.group.id, fromPeerId: f.b.id, toPeerId: f.a.id, mode: 'closed', held: true });
+    p.maintain(f.state, 10_000_000, { routeCooldownMs: 0 });
+    assert.equal(f.state.routes[reverseKey].mode, 'closed');
+    p.setRoute(f.state, f.group, f.b.id, f.a.id, 'open');
+    assert.equal(f.state.routes[reverseKey].held, undefined);
+  }
+});
+
 test('ledger validation accepts only valid optional auto, budget, and closure fields', () => {
   const f = fixture(); notice(f, 'notice', 100, { sendsPerHour: 10 });
   assert.doesNotThrow(() => p.validateLedger(f.state, f.state.authorityId));
   const group = f.state.groups[f.group.id];
   assert.throws(() => p.validateLedger({ ...f.state, groups: { ...f.state.groups, [f.group.id]: { ...group, auto: 'yes' } } }, f.state.authorityId), /group|corrupt/i);
+  assert.throws(() => p.validateLedger({ ...f.state, groups: { ...f.state.groups, [f.group.id]: { ...group, routeCooldownMs: Infinity } } }, f.state.authorityId), /group|cooldown|corrupt/i);
+  assert.throws(() => p.createGroup(f.state, 'host', { auto: true, routeCooldownMs: -1 }), /cooldown|validation/i);
   assert.throws(() => p.validateLedger({ ...f.state, peers: { ...f.state.peers, [f.a.id]: { ...f.a, credits: Infinity } } }, f.state.authorityId), /peer|credit|corrupt/i);
   assert.throws(() => p.validateLedger({ ...f.state, peers: { ...f.state.peers, [f.a.id]: { ...f.a, creditsAt: NaN } } }, f.state.authorityId), /peer|credit|corrupt/i);
   const openKey = p.routeKey(f.a.id, f.b.id); const closedKey = p.routeKey(f.b.id, f.a.id);
   assert.throws(() => p.validateLedger({ ...f.state, routes: { ...f.state.routes, [openKey]: { ...f.state.routes[openKey], closedAt: 100 } } }, f.state.authorityId), /route|closed/i);
   assert.throws(() => p.validateLedger({ ...f.state, routes: { ...f.state.routes, [closedKey]: { ...f.state.routes[closedKey], closedAt: NaN } } }, f.state.authorityId), /route|closed/i);
+  p.setRoute(f.state, f.group, f.a.id, f.b.id, 'closed');
+  assert.doesNotThrow(() => p.validateLedger(f.state, f.state.authorityId));
+  assert.throws(() => p.validateLedger({ ...f.state, routes: { ...f.state.routes, [openKey]: { ...f.state.routes[openKey], held: false } } }, f.state.authorityId), /route|held|corrupt/i);
+  assert.throws(() => p.validateLedger({ ...f.state, routes: { ...f.state.routes, [openKey]: { ...f.state.routes[openKey], mode: 'open' } } }, f.state.authorityId), /route|held|corrupt/i);
   for (const sendsPerHour of [0, 1.5, 1001]) assert.throws(() => notice(fixture(), `bad-${sendsPerHour}`, 100, { sendsPerHour }), /sendsPerHour|validation/i);
 });
 

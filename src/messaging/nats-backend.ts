@@ -123,7 +123,7 @@ class NatsBackend implements MessagingBackend {
     policy.fail('busy', 'Messaging ledger busy; operation was not committed');
   }
   async listGroups(): Promise<GroupRef[]> { return Object.values((await this.snapshot()).state.groups).map(policy.refOf); }
-  async createGroup(label: string, options?: { auto?: boolean }): Promise<GroupRef> { return this.change(s => policy.createGroup(s, label, options)); }
+  async createGroup(label: string, options?: { auto?: boolean; routeCooldownMs?: number }): Promise<GroupRef> { return this.change(s => policy.createGroup(s, label, options)); }
   async getGroupSummary(ref: GroupRef): Promise<GroupSummary | null> {
     const { state } = await this.snapshot();
     if (ref.authorityId !== state.authorityId) policy.fail('authority', 'Messaging authority mismatch');

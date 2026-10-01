@@ -1,6 +1,6 @@
 import { fuzzyFilter } from "../../worktree/fuzzy-filter.ts";
 import type { Style } from "./text.ts";
-import { fit, oneLine, sanitize, truncate } from "./text.ts";
+import { fit, oneLine, sanitize, truncate, visibleWidth } from "./text.ts";
 
 // A modal owns all keys until it calls its resolve function. Keys are keymap names (decodeKey output).
 export type Modal = { handle(key: string): void; lines(width: number, height: number, style: Style): string[] };
@@ -59,8 +59,27 @@ export function confirmBox(title: string, message: string, resolve: (value: bool
 	};
 }
 
-export function messageBox(title: string, text: string, resolve: () => void, options: { atEnd?: boolean } = {}): Modal {
-	const all = text.split("\n");
+function wrapLine(value: string, width: number): string[] {
+	if (width <= 0) return [""];
+	const lines: string[] = [];
+	let line = "";
+	let used = 0;
+	for (const char of value) {
+		const charWidth = visibleWidth(char);
+		if (line && used + charWidth > width) {
+			lines.push(line);
+			line = "";
+			used = 0;
+		}
+		line += char;
+		used += charWidth;
+	}
+	lines.push(line);
+	return lines;
+}
+
+export function messageBox(title: string, text: string, resolve: () => void, options: { atEnd?: boolean; wrap?: boolean } = {}): Modal {
+	const source = text.split("\n");
 	let offset = options.atEnd ? Number.MAX_SAFE_INTEGER : 0;
 	return {
 		handle(key) {
@@ -69,6 +88,7 @@ export function messageBox(title: string, text: string, resolve: () => void, opt
 			else resolve();
 		},
 		lines(width, height, style) {
+			const all = options.wrap ? source.flatMap((line) => wrapLine(sanitize(line), width)) : source;
 			const visible = Math.max(1, height - 2);
 			offset = Math.max(0, Math.min(offset, all.length - visible));
 			const body = all.slice(offset, offset + visible).map((line) => truncate(sanitize(line), width));

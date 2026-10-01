@@ -15,11 +15,11 @@ const message = (overrides = {}) => ({
   ...overrides,
 });
 
-function fakeTerminal() {
+function fakeTerminal(columns = 100) {
   let input = () => {};
   const terminal = {
     writes: [],
-    columns: () => 100,
+    columns: () => columns,
     rows: () => 30,
     write(data) { terminal.writes.push(data); },
     onInput(handler) { input = handler; },
@@ -36,8 +36,8 @@ function fakeTerminal() {
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-function open(runtime) {
-  const terminal = fakeTerminal();
+function open(runtime, columns = 100) {
+  const terminal = fakeTerminal(columns);
   const result = runDash({
     runtime, terminal, tmux: (args) => args[0] === 'list-panes' ? '' : '', insideTmux: true,
     style: plainStyle, refreshMs: 0, host: null,
@@ -97,6 +97,22 @@ test('Enter on a reply shows its full body and the request it answers', async ()
   assert.ok(screen.some((line) => line.includes('Alice → Bob  request  delivered')), screen.join('\n'));
   assert.ok(screen.includes('Please inspect'));
   assert.ok(screen.includes('all failures'));
+  dash.terminal.send('q');
+  await tick();
+  dash.terminal.send('q');
+  await dash.result;
+});
+
+test('message details wrap long body lines at the display width', async () => {
+  const runtime = await memoryRuntime({ now: clock('2026-09-25T09:00:00.000Z') });
+  record(runtime.store, message({ body: 'This message body is deliberately longer than the narrow dashboard width so its ending remains visible.' }));
+  const dash = open(runtime, 40);
+
+  dash.terminal.send('\r');
+  await tick();
+  const screen = dash.terminal.screen();
+  assert.ok(screen.includes('ending remains visible.'), screen.join('\n'));
+  assert.ok(screen.every((line) => line.length <= 40), screen.join('\n'));
   dash.terminal.send('q');
   await tick();
   dash.terminal.send('q');

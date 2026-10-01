@@ -370,7 +370,7 @@ export function runDash(deps: DashDeps): Promise<DashResult> {
 				for (const reply of thread.replies) sections.push("--- reply ---", messageDetail(reply));
 			}
 			track("message");
-			await ask<void>((resolve) => messageBox("Message (read-only)", sections.join("\n\n"), resolve));
+			await ask<void>((resolve) => messageBox("Message (read-only)", sections.join("\n\n"), resolve, { wrap: true }));
 			return;
 		}
 		if (row.kind === "ended" || row.kind === "older") return;

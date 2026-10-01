@@ -88,4 +88,6 @@ test('messageBox scrolls with j and k, keeps indentation, and closes on any othe
   assert.equal(box.result, undefined);
   const tail = drive((r) => w.messageBox('Transcript', body, r, { atEnd: true }), []);
   assert.deepEqual(tail.modal.lines(20, 5, plainStyle).slice(1, 4), ['  line 7', '  line 8', '  line 9']);
+  const wrapped = drive((r) => w.messageBox('Message', '0123456789abcdefghij', r, { wrap: true }), []);
+  assert.deepEqual(wrapped.modal.lines(10, 6, plainStyle).slice(1, 3), ['0123456789', 'abcdefghij']);
 });

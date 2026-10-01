@@ -41,8 +41,8 @@ export function validateInput(input: HashInput, allowLegacy = false): HashInput 
 export function payloadHash(input: HashInput, allowLegacy = false): string { return createHash('sha256').update(JSON.stringify(validateInput(input, allowLegacy))).digest('hex'); }
 export function routeKey(fromPeerId: string, toPeerId: string): string { return `${fromPeerId}:${toPeerId}`; }
 function closeProtocolRoute(s: Ledger, groupId: string, fromPeerId: string, toPeerId: string, now: number): void {
-  const group = s.groups[groupId];
-  s.routes[routeKey(fromPeerId, toPeerId)] = { groupId, fromPeerId, toPeerId, mode: 'closed', ...(group.auto ? { closedAt: now } : {}) };
+  const group = s.groups[groupId]; const held = s.routes[routeKey(fromPeerId, toPeerId)]?.held;
+  s.routes[routeKey(fromPeerId, toPeerId)] = { groupId, fromPeerId, toPeerId, mode: 'closed', ...(held ? { held } : group.auto ? { closedAt: now } : {}) };
 }
 export function newLedger(authorityId: string): Ledger {
   if (!uuid.test(authorityId)) fail('validation', 'Invalid authority ID');
@@ -70,7 +70,7 @@ function validateLedgerVersion(value: unknown, authorityId: string, version: 1 |
   const groups = value.groups; const peers = value.peers; const messages = value.messages;
   if (Object.keys(groups).length > 32 || Object.keys(peers).length > 512 || Object.keys(messages).length > 2000) fail('corrupt', 'Ledger exceeds bounds');
   for (const [id, group] of Object.entries(groups)) {
-    if (!isRecord(group) || !hasFields(group, ['authorityId', 'id', 'label', 'mode', 'round', 'limit', 'used']) || !uuid.test(id) || group.id !== id || group.authorityId !== authorityId || typeof group.label !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(group.label) || !['paused', 'armed', 'exhausted'].includes(typeof group.mode === 'string' ? group.mode : '') || !isNonnegativeInteger(group.used) || !isNonnegativeInteger(group.limit) || !isNonnegativeInteger(group.round) || group.used > group.limit || group.limit > 100 || (group.mode === 'exhausted' && group.used !== group.limit) || (group.mode === 'armed' && group.used >= group.limit) || (group.auto !== undefined && typeof group.auto !== 'boolean')) fail('corrupt', 'Invalid group ledger');
+    if (!isRecord(group) || !hasFields(group, ['authorityId', 'id', 'label', 'mode', 'round', 'limit', 'used']) || !uuid.test(id) || group.id !== id || group.authorityId !== authorityId || typeof group.label !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(group.label) || !['paused', 'armed', 'exhausted'].includes(typeof group.mode === 'string' ? group.mode : '') || !isNonnegativeInteger(group.used) || !isNonnegativeInteger(group.limit) || !isNonnegativeInteger(group.round) || group.used > group.limit || group.limit > 100 || (group.mode === 'exhausted' && group.used !== group.limit) || (group.mode === 'armed' && group.used >= group.limit) || (group.auto !== undefined && typeof group.auto !== 'boolean') || (group.routeCooldownMs !== undefined && (!isFiniteNumber(group.routeCooldownMs) || group.routeCooldownMs < 0))) fail('corrupt', 'Invalid group ledger');
   }
   for (const [id, peer] of Object.entries(peers)) {
     if (!isRecord(peer) || !hasFields(peer, ['id', 'groupId', 'sessionId', 'displayName', 'active', 'lastSeen']) || !uuid.test(id) || peer.id !== id || typeof peer.groupId !== 'string' || !Object.hasOwn(groups, peer.groupId) || typeof peer.active !== 'boolean' || typeof peer.sessionId !== 'string' || !isFiniteNumber(peer.lastSeen) || typeof peer.displayName !== 'string') fail('corrupt', 'Invalid peer ledger');
@@ -95,6 +95,7 @@ function validateLedgerVersion(value: unknown, authorityId: string, version: 1 |
       const from = peers[String(route.fromPeerId)] as Record<string, unknown>; const to = peers[String(route.toPeerId)] as Record<string, unknown>;
       if (route.groupId !== from.groupId || route.groupId !== to.groupId || from.active !== true || to.active !== true) fail('corrupt', 'Invalid route ledger');
       if (route.closedAt !== undefined && (route.mode !== 'closed' || !isFiniteNumber(route.closedAt))) fail('corrupt', 'Invalid closed route timestamp');
+      if (route.held !== undefined && (route.held !== true || !['closed', 'reply-only'].includes(String(route.mode)))) fail('corrupt', 'Invalid held route');
       if (route.mode === 'reply-only') {
         const request = typeof route.requestMessageId === 'string' ? messages[route.requestMessageId] : undefined;
         if (!isRecord(request) || request.kind !== 'request' || request.senderPeerId !== route.toPeerId || request.recipientPeerId !== route.fromPeerId || !['pending-delivery', 'awaiting-reply'].includes(String(request.conversationState))) fail('corrupt', 'Invalid reply-only route request');
@@ -185,16 +186,17 @@ function authorizeLease(s: Ledger, value: unknown): StoredPeer {
 }
 export function requireLease(s: Ledger, lease: ParticipantLease): StoredPeer { return authorizeLease(s, lease); }
 export function refOf(g: Group): GroupRef { return { authorityId: g.authorityId, id: g.id, label: g.label }; }
-export function createGroup(s: Ledger, label: string, options: { auto?: boolean } = {}): GroupRef {
+export function createGroup(s: Ledger, label: string, options: { auto?: boolean; routeCooldownMs?: number } = {}): GroupRef {
   if (!/^[a-z][a-z0-9-]{0,47}$/.test(label)) fail('validation', 'Group label must be 1–48 lowercase letters/digits/hyphens, starting with a letter');
   if (options.auto !== undefined && typeof options.auto !== 'boolean') fail('validation', 'Group auto must be a boolean');
+  if (options.routeCooldownMs !== undefined && (!isFiniteNumber(options.routeCooldownMs) || options.routeCooldownMs < 0)) fail('validation', 'Invalid route cooldown');
   const existing = Object.values(s.groups).find(g => g.label === label);
   if (existing) {
-    if (options.auto) { existing.auto = true; existing.mode = 'paused'; existing.limit = 0; existing.used = 0; }
+    if (options.auto) { existing.auto = true; existing.mode = 'paused'; existing.limit = 0; existing.used = 0; if (options.routeCooldownMs !== undefined) existing.routeCooldownMs = options.routeCooldownMs; }
     return refOf(existing);
   }
   if (Object.keys(s.groups).length >= 32) fail('full', 'Group store full; prune inactive groups');
-  const g: Group = { authorityId: s.authorityId, id: randomUUID(), label, mode: 'paused', round: 0, limit: 0, used: 0, ...(options.auto ? { auto: true } : {}) };
+  const g: Group = { authorityId: s.authorityId, id: randomUUID(), label, mode: 'paused', round: 0, limit: 0, used: 0, ...(options.auto ? { auto: true, ...(options.routeCooldownMs !== undefined ? { routeCooldownMs: options.routeCooldownMs } : {}) } : {}) };
   s.groups[g.id] = g; return refOf(g);
 }
 export function joinPeer(s: Ledger, ref: GroupRef, info: { sessionId: string; displayName: string }, now = Date.now()): StoredPeer {
@@ -282,7 +284,7 @@ export function setRoute(s: Ledger, ref: GroupRef, fromPeerId: string, toPeerId:
       else if (reply.state === 'attempted') { reply.state = 'terminal-unresolved'; reply.terminalAt = recoveredAt; }
     }
   }
-  s.routes[key] = { groupId: group.id, fromPeerId: from.id, toPeerId: to.id, mode };
+  s.routes[key] = { groupId: group.id, fromPeerId: from.id, toPeerId: to.id, mode, ...(mode === 'closed' ? { held: true } : {}) };
 }
 function sendsPerHourValue(value: number | undefined): number {
   const sendsPerHour = value ?? 10;
@@ -324,7 +326,7 @@ export function prepareMessage(s: Ledger, senderLease: ParticipantLease, input: 
   if (group.auto) { sender.credits = credits - cost; sender.creditsAt = createdAt; }
   const m: MessageStatus = { id: randomUUID(), sequence: ++s.sequence, groupId: sender.groupId, senderPeerId: sender.id, recipientPeerId: recipient.id, senderName: sender.displayName, requestKey, hash, createdAt, kind, state: 'queued', ...(kind === 'request' ? { conversationState: 'pending-delivery' as const } : {}), ...(normalized.inReplyTo ? { inReplyTo: normalized.inReplyTo } : {}) };
   if (kind === 'notice') closeProtocolRoute(s, sender.groupId, recipient.id, sender.id, createdAt);
-  if (kind === 'request') s.routes[routeKey(recipient.id, sender.id)] = { groupId: sender.groupId, fromPeerId: recipient.id, toPeerId: sender.id, mode: 'reply-only', requestMessageId: m.id };
+  if (kind === 'request') s.routes[routeKey(recipient.id, sender.id)] = { groupId: sender.groupId, fromPeerId: recipient.id, toPeerId: sender.id, mode: 'reply-only', requestMessageId: m.id, ...(s.routes[routeKey(recipient.id, sender.id)]?.held ? { held: true } : {}) };
   if (kind === 'reply' && repliedRequest) {
     repliedRequest.conversationState = 'reply-pending'; repliedRequest.replyMessageId = m.id;
     closeProtocolRoute(s, sender.groupId, sender.id, recipient.id, createdAt);
@@ -391,8 +393,8 @@ export function observeBatch(s: Ledger, recipientLease: ParticipantLease, reserv
 }
 export function observe(s: Ledger, recipientLease: ParticipantLease, reservation: Reservation, now = Date.now()): void { observeBatch(s, recipientLease, [reservation], now); }
 export function maintain(s: Ledger, now = Date.now(), options: { routeCooldownMs?: number } = {}): void {
-  const at = lifecycleTime(now); const routeCooldownMs = options.routeCooldownMs ?? 10 * 60_000;
-  if (!isFiniteNumber(routeCooldownMs) || routeCooldownMs < 0) fail('validation', 'Invalid route cooldown');
+  const at = lifecycleTime(now); const defaultRouteCooldownMs = options.routeCooldownMs ?? 10 * 60_000;
+  if (!isFiniteNumber(defaultRouteCooldownMs) || defaultRouteCooldownMs < 0) fail('validation', 'Invalid route cooldown');
   for (const message of Object.values(s.messages).sort((a, b) => a.sequence - b.sequence)) {
     if (message.state === 'queued' && at >= message.createdAt + QUEUED_TTL_MS) {
       message.state = 'expired'; message.terminalAt = at;
@@ -411,7 +413,7 @@ export function maintain(s: Ledger, now = Date.now(), options: { routeCooldownMs
       if (route?.expiresAt !== undefined && at >= route.expiresAt) { message.conversationState = 'unanswered'; message.conversationTerminalAt = at; closeProtocolRoute(s, message.groupId, message.recipientPeerId, message.senderPeerId, at); }
     }
   }
-  for (const route of Object.values(s.routes)) if (route.mode === 'closed' && route.closedAt !== undefined && route.closedAt + routeCooldownMs <= at && s.groups[route.groupId]?.auto) {
+  for (const route of Object.values(s.routes)) if (route.mode === 'closed' && !route.held && route.closedAt !== undefined && route.closedAt + (s.groups[route.groupId]?.routeCooldownMs ?? defaultRouteCooldownMs) <= at && s.groups[route.groupId]?.auto) {
     route.mode = 'open'; delete route.closedAt;
   }
   for (const peer of Object.values(s.peers).sort((a, b) => a.id.localeCompare(b.id))) {

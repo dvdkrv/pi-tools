@@ -8,7 +8,7 @@ const { connectBackend } = await jiti.import('../../src/messaging/nats-backend.t
 const { brokerFixture } = await import('./helpers/broker.mjs');
 const p = await jiti.import('../../src/messaging/policy.ts');
 
-function fixture(t, { env = {}, mode = 'tui', saved = true, autoJoin = true, heartbeatMs = 5 } = {}) {
+function fixture(t, { env = {}, mode = 'tui', saved = true, autoJoin = true, heartbeatMs = 5, ensureHook = async () => {} } = {}) {
   const state = p.newLedger(randomUUID()); const events = new Map(); const tools = new Map(); const commands = new Map();
   const notices = []; const statuses = []; const deliveries = []; const sentOptions = []; const maintainOptions = []; const audit = { records: [], states: [], prunes: [], open: [] };
   const bodies = new Map(); const registryNames = new Map([['session-one', 'Registry Name']]); const registryState = new Map();
@@ -35,7 +35,7 @@ function fixture(t, { env = {}, mode = 'tui', saved = true, autoJoin = true, hea
   const ctx = { mode, hasUI: mode === 'tui', cwd: '/tmp/example-repo', isIdle: () => true,
     sessionManager: { getSessionFile: () => saved ? '/tmp/session.jsonl' : undefined, getSessionId: () => sessionId },
     ui: { notify: (...args) => notices.push(args), setStatus: (...args) => statuses.push(args), select: async (_title, choices) => choices[0], confirm: async () => true, input: async () => '', editor: async () => 'body' } };
-  registerMessaging(pi, async () => { factoryCalls++; closed = false; return backend; }, async () => { ensureCalls++; }, {
+  registerMessaging(pi, async () => { factoryCalls++; closed = false; return backend; }, async () => { ensureCalls++; await ensureHook(); }, {
     env, heartbeatMs, settings: () => settings,
     registry: { displayName: id => registryNames.get(id), liveness: id => registryState.get(id) ?? 'live' },
     audit: { record: entry => audit.records.push(entry), openIds: () => audit.open, setStates: updates => audit.states.push(updates), prune: before => audit.prunes.push(before) },
@@ -67,7 +67,7 @@ for (const [name, options] of [['child run', { env: { PI_WORK_CHILD_RUN: 'C-1' }
 test('host auto-join uses registry names, budget wiring, pause, audit, tree rejoin, and final leave', async t => {
   const f = fixture(t); await f.events.get('session_start')({ reason: 'startup' }, f.ctx);
   assert.equal(f.backend.peer.displayName, 'Registry Name');
-  const group = Object.values(f.state.groups)[0]; assert.equal(group.label, 'host'); assert.equal(group.auto, true);
+  const group = Object.values(f.state.groups)[0]; assert.equal(group.label, 'host'); assert.equal(group.auto, true); assert.equal(group.routeCooldownMs, 180_000);
   const other = p.joinPeer(f.state, p.refOf(group), { sessionId: 'other', displayName: 'Other' });
   const tool = f.tools.get('peer_message');
   const result = await tool.execute('send-1', { action: 'send', kind: 'notice', toPeerId: other.id, text: 'SECRET BODY' }, undefined, undefined, f.ctx);
@@ -82,6 +82,22 @@ test('host auto-join uses registry names, budget wiring, pause, audit, tree rejo
   const oldId = f.backend.peer.id; await f.events.get('session_before_tree')({}, f.ctx); assert.equal(f.backend.peer, undefined);
   await f.events.get('session_tree')({}, f.ctx); assert.equal(f.backend.peer.id, oldId);
   await f.events.get('session_shutdown')({ reason: 'quit' }, f.ctx); assert.equal(f.state.peers[oldId].active, false);
+});
+
+test('a stale startup failure cannot detach its replacement session', async t => {
+  let release; let ensureRuns = 0;
+  const firstEnsure = new Promise(resolve => { release = resolve; });
+  const f = fixture(t, { ensureHook: async () => { if (++ensureRuns === 1) await firstEnsure; } });
+  const stale = f.events.get('session_start')({ reason: 'startup' }, f.ctx);
+  await waitFor(() => f.counts().ensureCalls === 1, 'first startup did not enter ensure');
+  f.setSessionId('session-two'); f.setRegistryName('session-two', 'Second Session');
+  await f.events.get('session_start')({ reason: 'replacement' }, f.ctx);
+  const replacementId = f.backend.peer.id;
+  release(); await stale;
+  assert.equal(f.backend.closed, false);
+  assert.equal(f.backend.peer.id, replacementId);
+  assert.equal(f.backend.peer.sessionId, 'session-two');
+  assert.equal(f.notices.length, 0);
 });
 
 test('reload suspends and the same session resumes the same auto-joined peer', async t => {
