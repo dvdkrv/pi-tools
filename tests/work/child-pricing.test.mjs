@@ -30,8 +30,22 @@ test('messageCost uses a reported positive cost before configured pricing', () =
   assert.equal(messageCost(usage({ cost: { total: 0.25 } }), undefined), 0.25);
 });
 
-test('messageCost prices zero-cost token usage and charges cache tokens at full input price', () => {
-  assert.equal(messageCost(usage({ input: 100_000, output: 20_000, cacheRead: 30_000, cacheWrite: 50_000 }), { input: 4, output: 20 }), 1.12);
+test('messageCost prices cache reads and writes at their own rates', () => {
+  // 0.1M input * 4 + 0.03M cache read * 0.4 + 0.05M cache write * 5 + 0.02M output * 20
+  const price = { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 };
+  assert.equal(messageCost(usage({ input: 100_000, output: 20_000, cacheRead: 30_000, cacheWrite: 50_000 }), price), 1.062);
+});
+
+test('messageCost defaults cache reads to 10% and cache writes to 125% of the input price', () => {
+  assert.equal(messageCost(usage({ cacheRead: 1_000_000 }), { input: 4, output: 20 }), 0.4);
+  assert.equal(messageCost(usage({ cacheWrite: 1_000_000 }), { input: 4, output: 20 }), 5);
+});
+
+test('a cache-heavy child run is no longer overestimated about fivefold', () => {
+  // Token counts from a real gateway child run that hit the old cap: ~$5.58 at full input price.
+  const run = usage({ input: 36, cacheRead: 1_168_974, cacheWrite: 188_255, output: 7_394 });
+  const cost = messageCost(run, { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 });
+  assert.ok(cost > 1.5 && cost < 1.6, String(cost));
 });
 
 test('messageCost is unknown only when nonzero token usage has no price', () => {

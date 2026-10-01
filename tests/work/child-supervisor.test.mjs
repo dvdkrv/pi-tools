@@ -149,6 +149,16 @@ test('a child whose first model call errors fails with the model error and keeps
   assert.match(l.messages[0], /^Child C-1 finished: failed[\s\S]*401 Unauthorized: invalid API key/);
 });
 
+test('a run the spending cap aborted reports over-spend, not a model error', async () => {
+  // The child's spend guard flags the run, then aborts the request, which surfaces as an error stop.
+  const l = await lead({ behavior: { onPrompt: 'model-error', errorMessage: 'This operation was aborted' }, declared: null });
+  l.supervisor.delegate('lead-1', l.repo, implement());
+  l.store.updateChildRun('C-1', { flags: ['over-spend'] });
+  await until(() => l.messages.length === 1);
+  assert.equal(l.store.getChildRun('C-1').outcome, 'over-spend');
+  assert.match(l.messages[0], /^Child C-1 finished: over-spend/);
+});
+
 test('an aborted assistant message is not a model error', async () => {
   const l = await lead({ behavior: { onPrompt: 'model-error', stopReason: 'aborted', errorMessage: 'Request was aborted' }, declared: null });
   l.supervisor.delegate('lead-1', l.repo, implement());

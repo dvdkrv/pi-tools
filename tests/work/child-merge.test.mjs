@@ -123,7 +123,7 @@ test('a repo run merges twice in a reusable integration worktree while the defau
   assert.equal(git(integration, 'log', '-1', '--format=%s'), 'Merge child C-1: Add retry to fetchJira');
   const second = finishedChild(p, { repoRun: true });
   assert.match(await mergeChild(p.deps, REPO_LEAD, outside, second.id), /^Merged C-2 into lead\/deadbeef at /);
-  assert.equal(git(integration, 'log', '--format=%s', '-2').split('\n').filter((line) => line.startsWith('Merge child')).length, 2);
+  assert.equal(git(integration, 'log', '--first-parent', '--format=%s', '-2').split('\n').filter((line) => line.startsWith('Merge child')).length, 2);
   assert.equal(git(p.lead, 'rev-parse', 'HEAD'), main);
   assert.equal(git(p.bare, 'rev-parse', 'refs/heads/lead/deadbeef'), git(integration, 'rev-parse', 'HEAD'));
 });

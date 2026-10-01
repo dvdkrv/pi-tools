@@ -19,7 +19,8 @@ export type ChildrenConfig = {
 	spendCapUsd: number;
 	commandTimeoutMinutes: number;
 	warnPercent: number;
-	pricing: Record<string, { input: number; output: number }>;
+	// USD per million tokens. Cache reads and writes default to 10% and 125% of input when unset.
+	pricing: Record<string, { input: number; output: number; cacheRead?: number; cacheWrite?: number }>;
 	repos: Record<string, RepoChildrenConfig>;
 };
 
@@ -30,10 +31,11 @@ export const DEFAULT_CHILDREN: ChildrenConfig = {
 	commandTimeoutMinutes: 10,
 	warnPercent: 80,
 	pricing: {
-		"ai-gw-openai/openai/gpt-5.6-sol": { input: 4, output: 20 },
-		"ai-gw-openai/openai/gpt-5.5": { input: 5, output: 30 },
-		"ai-gw-openai/openai/gpt-6-astra": { input: 10, output: 50 },
-		"ai-gw-anthropic-*/anthropic/claude-opus-5": { input: 5, output: 25 },
+		// List prices from Pi's model store for the same models (gateway models report cost 0).
+		"ai-gw-openai/openai/gpt-5.6-sol": { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
+		"ai-gw-openai/openai/gpt-5.5": { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 5 },
+		"ai-gw-openai/openai/gpt-6-astra": { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+		"ai-gw-anthropic-*/anthropic/claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 	},
 	repos: {},
 };
@@ -166,7 +168,14 @@ export function parseChildren(value: unknown, warnings: string[]): ChildrenConfi
 		const input = isRecord(entry) ? entry.input : undefined;
 		const output = isRecord(entry) ? entry.output : undefined;
 		if (model.trim() && typeof input === "number" && Number.isFinite(input) && input > 0 && typeof output === "number" && Number.isFinite(output) && output > 0) {
-			pricing[model] = { input, output };
+			const price: ChildrenConfig["pricing"][string] = { input, output };
+			for (const field of ["cacheRead", "cacheWrite"] as const) {
+				const rate = (entry as Record<string, unknown>)[field];
+				if (rate === undefined) continue;
+				if (typeof rate === "number" && Number.isFinite(rate) && rate >= 0) price[field] = rate;
+				else warnings.push(`children.pricing.${model}.${field} must be a non-negative price; using the default`);
+			}
+			pricing[model] = price;
 		} else warnings.push(`children.pricing.${model} needs positive input and output prices; skipped`);
 	}
 	if (value.repos !== undefined && !isRecord(value.repos)) warnings.push("children.repos must be an object keyed by repository; ignored");

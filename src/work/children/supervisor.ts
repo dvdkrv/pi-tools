@@ -237,11 +237,12 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 		const declared = session?.statusSource === "agent" ? session.status : undefined;
 		const summary = session?.note ?? "";
 		const diff = diffOf(run);
+		// A guard stop explains any error that follows it (the spend guard aborts the request).
+		if (run.flags.includes("over-spend")) return { outcome: "over-spend", summary, ...diff };
+		if (run.flags.includes("over-budget")) return { outcome: "over-budget", summary, ...diff };
 		if (handle.lastAssistantError && (!handle.successfulAssistant || handle.lastAssistantErrored)) {
 			return { outcome: "failed", summary: `model error: ${lastLine(handle.lastAssistantError)}`, ...diff };
 		}
-		if (run.flags.includes("over-spend")) return { outcome: "over-spend", summary, ...diff };
-		if (run.flags.includes("over-budget")) return { outcome: "over-budget", summary, ...diff };
 		if (run.flags.includes("no-git")) return { outcome: "failed", summary: summary || "git was unavailable, so the diff budget could not be measured", ...diff };
 		if (run.kind === "read-only") return { outcome: declared === "done" ? "done" : "incomplete", summary };
 		let committed = false;

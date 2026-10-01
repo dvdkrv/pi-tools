@@ -25,10 +25,15 @@ export function messageCost(usage: unknown, price: ModelPrice | undefined): Mess
 	const u = (typeof usage === "object" && usage !== null ? usage : {}) as Partial<Record<keyof Usage, unknown>>;
 	const reported = count((u.cost as { total?: unknown } | undefined)?.total);
 	if (reported > 0) return reported;
-	const input = count(u.input) + count(u.cacheRead) + count(u.cacheWrite);
+	const input = count(u.input);
+	const cacheRead = count(u.cacheRead);
+	const cacheWrite = count(u.cacheWrite);
 	const output = count(u.output);
-	if (input === 0 && output === 0) return 0;
+	if (input === 0 && cacheRead === 0 && cacheWrite === 0 && output === 0) return 0;
 	if (!price) return "unknown";
-	// Cache tokens are deliberately charged at the full input price for a conservative cap.
-	return (input * price.input + output * price.output) / 1_000_000;
+	// Cache reads usually cost about a tenth of input; charging them at full price overestimated
+	// cache-heavy child runs about fivefold and stopped them early. Long-context price tiers are ignored.
+	const readRate = price.cacheRead ?? price.input * 0.1;
+	const writeRate = price.cacheWrite ?? price.input * 1.25;
+	return (input * price.input + cacheRead * readRate + cacheWrite * writeRate + output * price.output) / 1_000_000;
 }
