@@ -65,6 +65,15 @@ test('default paths follow XDG variables', () => {
   assert.equal(expandHome('~', '/h'), '/h');
 });
 
+test('notifications default on and parse only booleans', () => {
+  assert.equal(parseWorkConfig('{}').config.notifications, undefined);
+  assert.equal(parseWorkConfig('{"notifications": false}').config.notifications, false);
+  assert.equal(parseWorkConfig('{"notifications": true}').config.notifications, true);
+  const bad = parseWorkConfig('{"notifications": "no"}');
+  assert.equal(bad.config.notifications, undefined);
+  assert.deepEqual(bad.warnings, ['notifications must be true or false; notifications stay on']);
+});
+
 test('bashTimeoutMinutes defaults to 30 and must be a positive number', async () => {
   const { parseWorkConfig, bashTimeoutMinutes } = await load('src/work/config.ts');
   assert.equal(bashTimeoutMinutes(parseWorkConfig('{}').config), 30);

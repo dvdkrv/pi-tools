@@ -22,6 +22,7 @@ function fakeTmux(state) {
 function setup({ runtime, env = IN_TMUX, mode = 'tui' } = {}) {
   const tools = new Map();
   const events = new Map();
+  const writes = [];
   const signals = new EventEmitter();
   // Stand-ins for Pi's own signal handlers; the extension only listens when Pi does.
   signals.on('SIGHUP', () => {});
@@ -35,6 +36,8 @@ function setup({ runtime, env = IN_TMUX, mode = 'tui' } = {}) {
     tmux: fakeTmux(tmuxState),
     git: () => { throw new Error('not a git repository'); },
     signals,
+    write: (value) => writes.push(value),
+    watchdog: () => () => {},
   })({
     registerCommand() {},
     registerTool(definition) { tools.set(definition.name, definition); },
@@ -52,7 +55,7 @@ function setup({ runtime, env = IN_TMUX, mode = 'tui' } = {}) {
     ui: { notify: (message, level) => notes.push({ message, level }), setStatus() {} },
   };
   const emit = (name, event = {}) => events.get(name)(event, ctx);
-  return { tools, emit, ctx, notes, signals, tmuxState };
+  return { tools, emit, ctx, notes, signals, tmuxState, writes };
 }
 
 const assistant = (text) => ({ role: 'assistant', content: [{ type: 'text', text }] });
@@ -70,7 +73,7 @@ test('session_start registers a tmux session with its pane, window, and file', a
   assert.equal(row.headless, false);
   assert.equal(row.parentSession, null);
   assert.equal(row.status, 'needs-me');
-  assert.equal(row.note, 'new session');
+  assert.equal(row.note, '');
 });
 
 test('a child in rpc mode registers as headless, with its parent and no pane', async () => {
@@ -123,7 +126,7 @@ test('rpc always registers, and print and json runs register only as children', 
   }
 });
 
-test('a run is working, and without a declaration it ends as needs-me with the last line as its note', async () => {
+test('agent_end only remembers messages, and settling applies the needs-me fallback and turn metadata', async () => {
   const now = clock();
   const rt = await memoryRuntime({ now });
   const s = setup({ runtime: rt });
@@ -134,12 +137,16 @@ test('a run is working, and without a declaration it ends as needs-me with the l
   s.tmuxState.window = 'api-renamed';
   now.advance(1000);
   await s.emit('agent_end', { messages: [assistant('Done with step one.\n\nShould I also update the docs?')] });
+  assert.equal(rt.store.getSession('sess-1').status, 'working');
+  assert.equal(rt.store.getSession('sess-1').lastTurnAt, null);
+  await s.emit('agent_settled');
   const row = rt.store.getSession('sess-1');
   assert.equal(row.status, 'needs-me');
   assert.equal(row.statusSource, 'auto');
   assert.equal(row.note, 'Should I also update the docs?');
   assert.equal(row.tmuxWindow, 'api-renamed');
   assert.equal(row.lastTurnAt, '2026-09-25T09:00:02.000Z');
+  assert.equal(s.writes.length, 1);
 });
 
 test('a declared status wins over the fallback, the last declaration wins, and the next run resets it', async () => {
@@ -151,15 +158,54 @@ test('a declared status wins over the fallback, the last declaration wins, and t
   await tool.execute('c1', { status: 'needs-me', note: 'Which option?' }, undefined, undefined, s.ctx);
   await tool.execute('c2', { status: 'waiting-external', note: 'CI run 123 is pending' }, undefined, undefined, s.ctx);
   await s.emit('agent_end', { messages: [assistant('Waiting for CI.')] });
+  await s.emit('agent_settled');
   let row = rt.store.getSession('sess-1');
   assert.equal(row.status, 'waiting-external');
   assert.equal(row.statusSource, 'agent');
   assert.equal(row.note, 'CI run 123 is pending');
   await s.emit('agent_start');
   await s.emit('agent_end', { messages: [] });
+  await s.emit('agent_settled');
   row = rt.store.getSession('sess-1');
   assert.equal(row.status, 'needs-me');
   assert.equal(row.statusSource, 'auto');
+});
+
+test('a declared needs-me status notifies only a top-level TUI session when enabled', async () => {
+  for (const [label, mode, env, config, expected] of [
+    ['top-level TUI', 'tui', IN_TMUX, {}, 1],
+    ['rpc', 'rpc', {}, {}, 0],
+    ['headless child', 'rpc', { PI_WORK_PARENT_SESSION: 'parent-1' }, {}, 0],
+    ['child run', 'tui', { ...IN_TMUX, PI_WORK_CHILD_RUN: 'C-99' }, {}, 0],
+    ['disabled', 'tui', IN_TMUX, { notifications: false }, 0],
+  ]) {
+    const rt = await memoryRuntime({ config: { github: { accounts: [] }, projects: [], rules: [], ...config } });
+    const s = setup({ runtime: rt, mode, env });
+    await s.emit('session_start', { reason: 'startup' });
+    await s.emit('agent_start');
+    await s.tools.get('session_status').execute('c1', { status: 'needs-me', note: 'Which runner?' }, undefined, undefined, s.ctx);
+    await s.emit('agent_end', { messages: [assistant('Which runner?')] });
+    await s.emit('agent_settled');
+    assert.equal(s.writes.length, expected, label);
+  }
+});
+
+test('input does not report a response until the session has completed a turn', async () => {
+  const now = clock();
+  const rt = await memoryRuntime({ now });
+  const s = setup({ runtime: rt });
+  await s.emit('session_start', { reason: 'startup' });
+  now.advance(10_000);
+  await s.emit('input', { text: 'hello', source: 'interactive' });
+  assert.equal(rt.store.listUsage().length, 0);
+
+  await s.emit('agent_start');
+  await s.tools.get('session_status').execute('c1', { status: 'needs-me', note: 'Choose?' }, undefined, undefined, s.ctx);
+  await s.emit('agent_end', { messages: [assistant('Choose?')] });
+  await s.emit('agent_settled');
+  now.advance(5_000);
+  await s.emit('input', { text: 'one', source: 'interactive' });
+  assert.equal(rt.store.listUsage().filter((row) => row.action === 'session.responded').length, 1);
 });
 
 test('session_status has a static schema and the spec description', async () => {
@@ -225,6 +271,7 @@ test('a registry failure warns once and stops recording for the session', async 
   await s.emit('session_start', { reason: 'startup' });
   await s.emit('agent_start');
   await s.emit('agent_end', { messages: [] });
+  await s.emit('agent_settled');
   const warnings = s.notes.filter((note) => note.level === 'warning');
   assert.equal(warnings.length, 1);
   assert.match(warnings[0].message, /registry is off/);

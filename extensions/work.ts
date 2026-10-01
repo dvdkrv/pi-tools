@@ -18,6 +18,7 @@ import { startWatchdog } from "../src/work/children/watchdog.ts";
 import { bashTimeoutMinutes, childrenConfig, DEFAULT_BASH_TIMEOUT_MINUTES, expandHome } from "../src/work/config.ts";
 import type { GhRunner } from "../src/work/connectors/github.ts";
 import { registerAgentJob } from "../src/work/jobs.ts";
+import { notifyNeedsMe } from "../src/work/notify.ts";
 import type { TmuxRunner } from "../src/work/planner.ts";
 import { defaultTmux, launchPlanner, PLANNER_ENV, shellQuote } from "../src/work/planner.ts";
 import { registerPlannerTools } from "../src/work/planner-tools.ts";
@@ -50,6 +51,7 @@ export type WorkExtensionOptions = {
 	watchdog?: typeof startWatchdog;
 	supervisor?: Partial<Omit<SupervisorDeps, "store" | "config" | "notify">>;
 	gh?: GhRunner;
+	write?: (value: string) => void;
 };
 
 export const PROPOSE_DESCRIPTION = "Propose a follow-up for the user's work triage inbox. Use only for work outside your current task's scope, or for work you would otherwise leave as \"not done yet\" at the end of the session. Do not propose normal progress on your own task. The user reviews every proposal; this tool cannot create items, change status, or contact Jira.";
@@ -378,6 +380,25 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		pi.on("agent_end", async (event) => {
 			tracker.agentEnd(event.messages);
 			guard?.agentEnd();
+		});
+		pi.on("agent_settled", async (_event, ctx) => {
+			const session = tracker.settled();
+			// Only a terminal session notifies: its stdout is the user's terminal, and it is always top-level.
+			if (!session || ctx.mode !== "tui" || childRunId) return;
+			let enabled = true;
+			try {
+				enabled = rt().config.notifications !== false;
+			} catch {
+				// A registry failure leaves notifications at their default.
+			}
+			if (!enabled) return;
+			notifyNeedsMe({
+				session,
+				repo: repoOf(ctx.cwd),
+				env,
+				tmux: sessionTmux,
+				write: options.write ?? ((value) => { process.stdout.write(value); }),
+			});
 		});
 		pi.on("session_info_changed", async (event) => tracker.rename(event.name ?? null));
 		pi.on("session_shutdown", async (event) => {

@@ -9,7 +9,7 @@ export type GithubAccount = { user: string; orgs: string[] };
 export type ProjectConfig = { slug: string; title: string; jiraEpic?: string; notesPath?: string };
 export type Rule = { project: string; repo?: string; jiraEpic?: string; jiraProject?: string };
 export type DashboardConfig = { showTriage: boolean };
-export type WorkConfig = { jira?: JiraConfig; github: { accounts: GithubAccount[] }; projects: ProjectConfig[]; rules: Rule[]; plannerCwd?: string; usage?: boolean; children?: ChildrenConfig; dashboard?: DashboardConfig; bashTimeoutMinutes?: number };
+export type WorkConfig = { jira?: JiraConfig; github: { accounts: GithubAccount[] }; projects: ProjectConfig[]; rules: Rule[]; plannerCwd?: string; usage?: boolean; notifications?: boolean; children?: ChildrenConfig; dashboard?: DashboardConfig; bashTimeoutMinutes?: number };
 export type LoadedConfig = { config: WorkConfig; warnings: string[] };
 export type RepoChildrenConfig = { ignore: string[]; expensiveCommands: string[] };
 export type DiffBudgetConfig = { defaultLines: number; defaultFiles: number; maxLines: number; prLines: number };
@@ -260,6 +260,10 @@ export function parseWorkConfig(raw: string): LoadedConfig {
 			config.dashboard = { showTriage: false };
 			warnings.push("dashboard.showTriage must be true or false; using false");
 		}
+	}
+	if (data.notifications !== undefined) {
+		if (typeof data.notifications === "boolean") config.notifications = data.notifications;
+		else warnings.push("notifications must be true or false; notifications stay on");
 	}
 	if (data.bashTimeoutMinutes !== undefined) {
 		const minutes = data.bashTimeoutMinutes;

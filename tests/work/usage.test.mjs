@@ -58,7 +58,7 @@ test('Pi commands and needs-me response times are recorded without content', asy
   const rt = await memoryRuntime({ now });
   const commands = new Map();
   const events = new Map();
-  createWorkExtension({ runtime: () => rt, repoFromCwd: () => undefined, env: { TMUX: 't', TMUX_PANE: '%1' }, pid: 1, tmux: () => 'api\n', git: () => { throw new Error('not a git repository'); }, signals: new EventEmitter() })({
+  createWorkExtension({ runtime: () => rt, repoFromCwd: () => undefined, env: { TMUX: 't', TMUX_PANE: '%1' }, pid: 1, tmux: () => 'api\n', git: () => { throw new Error('not a git repository'); }, signals: new EventEmitter(), write: () => {} })({
     registerCommand(name, definition) { commands.set(name, definition.handler); },
     registerTool() {},
     on(name, handler) { events.set(name, handler); },
@@ -69,6 +69,9 @@ test('Pi commands and needs-me response times are recorded without content', asy
   const ctx = { cwd: '/src/api', mode: 'tui', hasUI: true, sessionManager: { getSessionId: () => 's1', getSessionFile: () => undefined, getSessionName: () => undefined }, ui: { notify() {}, setStatus() {} } };
   await commands.get('todo')('secret title', ctx);
   await events.get('session_start')({ reason: 'startup' }, ctx);
+  await events.get('agent_start')({}, ctx);
+  await events.get('agent_end')({ messages: [] }, ctx);
+  await events.get('agent_settled')({}, ctx);
   now.advance(90_000);
   await events.get('input')({ text: '/todo x', source: 'interactive' }, ctx);
   await events.get('input')({ text: 'queued', source: 'extension' }, ctx);

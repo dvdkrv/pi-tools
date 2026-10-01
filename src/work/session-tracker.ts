@@ -6,7 +6,7 @@ import { errorMessage } from "./secrets.ts";
 import type { WorkStore } from "./store.ts";
 import { listPanes, windowNameOf } from "./tmux.ts";
 import { lastAssistantLine } from "./transcript.ts";
-import type { DeclaredStatus } from "./types.ts";
+import type { DeclaredStatus, Session } from "./types.ts";
 
 export const PARENT_SESSION_ENV = "PI_WORK_PARENT_SESSION";
 
@@ -27,6 +27,7 @@ export type SessionTracker = {
 	agentStart(): void;
 	declare(status: DeclaredStatus, note: string): boolean;
 	agentEnd(messages: readonly unknown[]): void;
+	settled(): Session | undefined;
 	rename(name: string | null): void;
 	shutdown(clean: boolean): void;
 };
@@ -42,6 +43,7 @@ export function createSessionTracker(deps: TrackerDeps): SessionTracker {
 	let pane: string | null = null;
 	let disabled = false;
 	let declared = false;
+	let messages: readonly unknown[] = [];
 	const linkDeps: LinkDeps = { env: deps.env, git: deps.git };
 
 	// Registry failures never break the Pi session: warn once, then stop recording for this session.
@@ -88,12 +90,13 @@ export function createSessionTracker(deps: TrackerDeps): SessionTracker {
 			if (source === "extension" || text.trimStart().startsWith("/")) return;
 			guard((store, sessionId) => {
 				const session = store.getSession(sessionId);
-				if (session?.status !== "needs-me") return;
+				if (session?.status !== "needs-me" || !session.lastTurnAt) return;
 				deps.onResponded?.(Math.max(0, Math.round((store.clock().getTime() - Date.parse(session.statusAt)) / 1000)));
 			});
 		},
 		agentStart() {
 			declared = false;
+			messages = [];
 			guard((store, sessionId) => {
 				store.setSessionStatus(sessionId, "working", "", "auto");
 			});
@@ -105,14 +108,19 @@ export function createSessionTracker(deps: TrackerDeps): SessionTracker {
 			if (recorded) declared = true;
 			return recorded;
 		},
-		agentEnd(messages) {
+		agentEnd(value) {
+			messages = value;
+		},
+		settled() {
+			let session: Session | undefined;
 			guard((store, sessionId) => {
 				if (!declared) store.setSessionStatus(sessionId, "needs-me", lastAssistantLine(messages), "auto");
 				const window = pane ? windowNameOf(deps.tmux, pane) : null;
 				store.updateSession(sessionId, window ? { lastTurnAt: store.now(), tmuxWindow: window } : { lastTurnAt: store.now() });
 				autoLinkSession(store, sessionId, linkDeps);
+				session = store.getSession(sessionId);
 			});
-			declared = false;
+			return session;
 		},
 		rename(name) {
 			guard((store, sessionId) => {
