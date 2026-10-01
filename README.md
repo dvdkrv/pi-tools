@@ -6,7 +6,7 @@ A single [Pi](https://github.com/earendil-works/pi-mono) package containing seve
 
 Pi extensions execute with full system access. Review this repository and its pinned release before installation.
 
-Messaging is local-first. It accepts only a token-authenticated loopback NATS endpoint and stores broker authority and JetStream data in owner-only paths. Loading the package may ensure that local infrastructure is ready, but it never joins a group, grants allowance, reads pending bodies, sends work, or invokes a model automatically.
+Messaging is local-first. It accepts only a token-authenticated loopback NATS endpoint and stores broker authority and JetStream data in owner-only paths. Top-level terminal sessions join one host-wide group automatically (set `"messaging": { "autoJoin": false }` to turn this off); child agents never join. Agents cannot read stored bodies through tools. Every message, with its full body, is kept in an owner-only audit log that only the user reads.
 
 The worktree, task, and Claude bridge commands can create processes, tmux sessions, branches, and worktrees. They are interactive commands and do not run merely because the package is loaded.
 
@@ -22,13 +22,21 @@ The worktree, task, and Claude bridge commands can create processes, tmux sessio
 
 ### messaging
 
-`/messages` provides human-controlled setup, joining, takeover, status, routes, allowance, inbox, recovery, and final leave/revoke operations. The model-facing `peer_message` tool can discover metadata and directional route modes, rename only itself, inspect bounded status, or queue an explicitly typed message inside a joined group. It cannot join, reopen routes, arm allowance, take over identities, or read stored bodies.
+Every top-level terminal Pi session joins one host-wide `host` group when it starts, named after its tmux window or repository (the same name the work dashboard shows), so agents in different sessions can message each other without setup. Child agents never join; they talk to their lead over RPC. Presence comes from heartbeats and from the work session registry: a peer whose session is no longer running is `offline`, and is removed once it also stops heartbeating. A session leaves the group when it quits or switches to another session, and resumes the same identity after `/reload` or tree navigation.
 
-Every new message is a `notice`, `request`, or `reply`. A notice atomically closes the recipient-to-sender route, so its recipient cannot answer with a disguised fresh message. A request reserves two credits and grants its exact recipient one reply capability; the reply consumes that capability and closes both directions. Humans alone can reopen a route. Messages use stable member IDs rather than display names or transient session attribution.
+The model-facing `peer_message` tool can discover peers with their presence and directional route modes, inspect bounded metadata-only status and its own send budget, or queue an explicitly typed message. It cannot reopen routes, raise its budget, take over identities, or read stored bodies.
 
-Each admitted message consumes one finite shared credit. Queued delivery expires after one hour, attempted-unconfirmed delivery becomes terminal-unresolved after ten minutes without a refund, and a delivered request's reply capability expires after one hour. Terminal metadata and bodies are retained for seven days before maintenance pruning. Eligible messages are delivered as one ordered batch at an idle boundary; uncertain work is never automatically replayed.
+Every new message is a `notice`, `request`, or `reply`. A notice atomically closes the recipient-to-sender route, so its recipient cannot answer with a disguised fresh message. A request grants its exact recipient one reply capability; the reply consumes that capability and closes both directions. In the host group, a route closed this way reopens after `messaging.routeCooldownMinutes` (default 10); a route a human closes with `/messages routes` stays closed. Messages use stable member IDs rather than display names or transient session attribution.
 
-Messaging requires NATS Server 2.14.6 in `PATH` (or `NATS_SERVER`) and uses a same-user loopback trust boundary. Participation, allowance, route recovery, identity takeover, and active-session reload remain explicit human decisions.
+Loop protections: each session may have only one unresolved outbound message, a recipient holds at most eight queued messages, and messages are delivered as one ordered batch only at an idle boundary, never between the steps of a run. Each session has a send budget of `messaging.sendsPerHour` (default 10) that refills continuously and holds at most one hour's worth; notices and requests cost one send, replies are free. Queued delivery expires after one hour, attempted-unconfirmed delivery becomes terminal-unresolved after ten minutes, and a delivered request's reply capability expires after one hour. Uncertain work is never automatically replayed.
+
+`"messaging": { "paused": true }` pauses messaging on the whole host; a list of session names or session-id prefixes pauses only those sessions. `/messages pause` and `/messages resume` pause the current session until it restarts. A paused session neither sends nor receives automatically; messages to it wait in its queue.
+
+**Audit log.** Every accepted message is recorded with its time, sender, recipient, kind, the request it answers, its delivery state, and its full body in the work database (`work.db`, mode 0600), and kept for `messaging.retentionDays` (default 30). Only the user reads it: the dashboard's Messages section, and `work messages [--peer <name>] [--since 2h]` in a shell. `work messages` refuses to run inside a Pi agent's shell commands.
+
+`/messages` keeps the human controls: status, send, routes, inbox, prune, revoke, and pause. It can also join, arm, and leave manual groups with a finite shared allowance, as before.
+
+Messaging requires NATS Server 2.14.6 in `PATH` (or `NATS_SERVER`) and uses a same-user loopback trust boundary.
 
 ### task
 
@@ -57,11 +65,11 @@ A local work tracker for one person: one list of projects and items, a triage in
 
 `work_propose`, `job_register`, and the lead tools below have `deferred` exposure: the model loads them with Pi's `tool_search` tool when it needs them, and a top-level terminal session activates `tool_search` for that. `session_status` stays declared directly. `children` is marked read-only, and `stop_child` and `merge_child` destructive.
 
-The same features are available from the shell through `bin/work.ts` (`add`, `list`, `show`, `set`, `project`, `sync`, `triage`, `today`, `promote`, `undismiss`, `recap`, `restore`, `dash`, `job`, `usage`, `export`, `import`). For example, use `alias work='node <package>/bin/work.ts'` and `alias todo='work add'`. Aliases do not reach tmux popups or hooks, so bindings should call a small `work` wrapper script on `PATH` instead.
+The same features are available from the shell through `bin/work.ts` (`add`, `list`, `show`, `set`, `project`, `sync`, `triage`, `today`, `promote`, `undismiss`, `recap`, `restore`, `dash`, `job`, `messages`, `usage`, `export`, `import`). For example, use `alias work='node <package>/bin/work.ts'` and `alias todo='work add'`. Aliases do not reach tmux popups or hooks, so bindings should call a small `work` wrapper script on `PATH` instead.
 
 **Sessions.** Pi sessions register themselves in the work database automatically: their pane, window, file, and status. A run marks it `working`. When the full run settles, after any retries or compaction, it becomes `needs-me` with the last line of the reply as its note, unless the agent called the static `session_status` tool to declare `needs-me`, `waiting-external`, or `done` with a note. A top-level TUI session that settles as `needs-me` also sends an OSC 777 desktop notification, except when its pane is active in an attached tmux client; set `"notifications": false` to disable these. Sessions link to items automatically from `PI_WORK_ITEM` (set by `/task` when the request names an item), from PR head branches and Jira keys in the branch name, or from another session in the same worktree. Terminal sessions always register as top-level sessions, with no pane when they run outside tmux. `rpc` sessions register as headless. `print` and `json` runs register only as child agents, when `PI_WORK_PARENT_SESSION` names their parent. Children appear only under their parent.
 
-**Dashboard.** `/dash` (or `work dash` in a terminal) opens a full-screen dashboard that leads with Decisions: sessions waiting on you, oldest first. A session that has never had a turn is `idle`, not waiting on you, and is listed under Other sessions. Pending triage joins Decisions only with `"dashboard": { "showTriage": true }` in the config. Waiting, Working, and Other sessions follow. Other sessions lists the last 24 hours and folds older ones into one `+N older` row; a `/` filter searches those too. A row is named after its tmux window, or after its repository (then its directory) when the window has a default name (`pi`, `zsh`, `bash`). Notes are shown without Markdown. From 140 columns a host panel shows CPU (per core, a second sample one second after opening), memory, disks (yellow from 85%, red from 95%), top processes, Pi processes with how many are not reporting to the registry, and orphaned processes. Keys are vim-style (`j`/`k`, `gg`/`G`, `Ctrl-d`/`Ctrl-u`, `Tab`, `/` to filter, `?` for help). `Enter` jumps to a session's pane and closes the popup, reopens a crashed or closed session, opens triage, or shows a child's read-only transcript. `L` links a session to an item, `x` then `y` stops a child agent, and `D` then `y` deletes a closed record. A tmux binding such as `bind g display-popup -E -w 90% -h 90% 'work dash'` needs the wrapper script mentioned above.
+**Dashboard.** `/dash` (or `work dash` in a terminal) opens a full-screen dashboard that leads with Decisions: sessions waiting on you, oldest first. A session that has never had a turn is `idle`, not waiting on you, and is listed under Other sessions. Pending triage joins Decisions only with `"dashboard": { "showTriage": true }` in the config. Waiting, Working, Jobs, Messages, and Other sessions follow. Messages lists the last 24 hours of lateral messages between sessions (time, sender → recipient, kind, and first line, at most 20); `Enter` shows the full message with its request or replies. Other sessions lists the last 24 hours and folds older ones into one `+N older` row; a `/` filter searches those too. A row is named after its tmux window, or after its repository (then its directory) when the window has a default name (`pi`, `zsh`, `bash`). Notes are shown without Markdown. From 140 columns a host panel shows CPU (per core, a second sample one second after opening), memory, disks (yellow from 85%, red from 95%), top processes, Pi processes with how many are not reporting to the registry, and orphaned processes. Keys are vim-style (`j`/`k`, `gg`/`G`, `Ctrl-d`/`Ctrl-u`, `Tab`, `/` to filter, `?` for help). `Enter` jumps to a session's pane and closes the popup, reopens a crashed or closed session, opens triage, or shows a child's read-only transcript. `L` links a session to an item, `x` then `y` stops a child agent, and `D` then `y` deletes a closed record. A tmux binding such as `bind g display-popup -E -w 90% -h 90% 'work dash'` needs the wrapper script mentioned above.
 
 **Restore.** After a reboot, `work restore --auto` (for example from `@resurrect-hook-post-restore-all`) reopens crashed terminal sessions that ran in tmux, from the last 7 days, and are not `done`. It types `pi --session <file>` into a matching restored shell pane, splits the window, or opens a new window. It runs at most once per boot, and the dashboard runs the same logic when it opens. `work restore --dry-run` prints the plan.
 
@@ -83,6 +91,7 @@ Data lives in `${XDG_DATA_HOME:-~/.local/share}/work/work.db` (SQLite, mode 0600
   "usage": true,
   "notifications": true,
   "bashTimeoutMinutes": 30,
+  "messaging": { "autoJoin": true, "sendsPerHour": 10, "paused": false, "retentionDays": 30, "routeCooldownMinutes": 10 },
   "children": {
     "defaultModel": "ai-gw-openai/openai/gpt-5.6-sol",
     "diffBudget": { "defaultLines": 300, "defaultFiles": 8, "maxLines": 800, "prLines": 2000 },
@@ -95,7 +104,7 @@ Data lives in `${XDG_DATA_HOME:-~/.local/share}/work/work.db` (SQLite, mode 0600
 }
 ```
 
-Jira and GitHub are read on demand only, and cached for 10 minutes. Jira writes happen only after an explicit confirmation: promoting an item or applying a suggested status transition. GitHub is read-only, except that `merge_child` pushes the lead's branch and creates draft PRs. Secrets are read at call time and never stored. Every `gh` call runs with `DBUS_SESSION_BUS_ADDRESS=disabled:`, so `gh auth token` cannot start a D-Bus daemon that never exits. The work extension also sets it, when it is unset, for every command a session runs. A `bash` call that sets no timeout gets `bashTimeoutMinutes` (default 30) in every session. Children keep their stricter `children.commandTimeoutMinutes`. `npm run work:smoke` runs read-only live connector checks.
+Jira and GitHub are read on demand only, and cached for 10 minutes. Jira writes happen only after an explicit confirmation: promoting an item or applying a suggested status transition. GitHub is read-only, except that `merge_child` pushes the lead's branch and creates draft PRs. Secrets are read at call time and never stored. Every `gh` call runs with `DBUS_SESSION_BUS_ADDRESS=disabled:`, so `gh auth token` cannot start a D-Bus daemon that never exits. The work extension also sets it, when it is unset, for every command a session runs. The `messaging` keys are described under the messaging extension: `autoJoin` (default `true`), `sendsPerHour` (default 10), `paused` (`false`, `true`, or a list of session names or session-id prefixes), `retentionDays` (default 30), and `routeCooldownMinutes` (default 10). A `bash` call that sets no timeout gets `bashTimeoutMinutes` (default 30) in every session. Children keep their stricter `children.commandTimeoutMinutes`. `npm run work:smoke` runs read-only live connector checks.
 
 ### worktree-manager
 
@@ -119,24 +128,15 @@ The separate Superpowers package is intentionally not bundled. Install its indep
 
 ## Messaging broker
 
-Install NATS Server 2.14.6 using the platform package manager or upstream release. The first Pi session can ensure an authenticated detached broker on loopback. Infrastructure startup does not opt the session into messaging.
+Install NATS Server 2.14.6 using the platform package manager or upstream release. The first Pi session ensures an authenticated detached broker on loopback, and each top-level terminal session then joins the host group by itself.
 
-A safe first-time or upgrade flow is:
-
-1. settle active work and close older messaging-enabled Pi processes;
-2. install the package at a human-controlled idle boundary;
-3. start a fresh Pi process;
-4. explicitly run `/messages join <group>`;
-5. confirm or select the intended saved identity;
-6. inspect status and routes; finalized historical identities are hidden from normal member lists.
+To upgrade, settle active work, install the package, and start fresh Pi processes. Sessions still running an older release keep working in their own manual groups but do not join the host group.
 
 Never copy broker credentials or data between users or machines.
 
 ## Messaging lifecycle
 
-Reload, shutdown, session replacement, fork, and tree navigation suspend participation by default. Suspended or crashed members remain resumable for 24 hours and then finalize automatically on the next maintenance opportunity. Explicit `/messages leave` and human revoke are immediately final. A human-confirmed new-session takeover keeps the stable member ID, role, durable inbox, routes, history, and allowance while rotating the private lease to fence the old process.
-
-Ledger v3 migration is forward-only and runs when a human next opens messaging, not merely when the broker starts. Apply a compatible signed release and reload Pi only at a human-controlled idle boundary.
+`/reload` and tree navigation suspend participation, and the same session resumes its member identity afterward. Quitting, `/new`, `/resume`, and fork leave the host group; the next session joins under its own identity. Crashed members are removed as soon as the session registry shows their process is gone, and in any case finalize 24 hours after their last heartbeat. Human revoke is immediately final. In manual groups, every departure suspends, and a human-confirmed takeover keeps the stable member ID, durable inbox, routes, history, and allowance while rotating the private lease to fence the old process.
 
 The model sees identity and route metadata only through the static `peer_message` API. Its tool schema and prompt guidance do not change during a process; heartbeats and maintenance append no prompt traffic. Private leases, broker tokens, stored bodies, and hidden dynamic identity context are not exposed.
 
