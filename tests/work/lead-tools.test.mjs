@@ -9,11 +9,12 @@ const { createWorkExtension } = await load('extensions/work.ts');
 const FAKE = fileURLToPath(new URL('./fixtures/fake-rpc-child.mjs', import.meta.url));
 const READ_ONLY = { goal: 'Map the auth flow', kind: 'read-only', scope: [], nonGoals: [], acceptance: [], context: '', model: null, modelReason: null, from: null };
 
-function setup({ runtime, env = {}, mode = 'tui', supervisor = {} }) {
+function setup({ runtime, env = {}, mode = 'tui', supervisor = {}, toolSearch = true }) {
   const tools = new Map();
   const events = new Map();
   const sent = [];
   let active;
+  if (toolSearch) tools.set('tool_search', { name: 'tool_search', exposure: 'direct' });
   createWorkExtension({
     runtime: () => runtime, repoFromCwd: () => undefined, env, pid: 4242, tmux: () => '',
     git: () => { throw new Error('not a git repository'); }, signals: new EventEmitter(), supervisor,
@@ -22,7 +23,8 @@ function setup({ runtime, env = {}, mode = 'tui', supervisor = {} }) {
     registerTool(definition) { tools.set(definition.name, definition); },
     on(name, handler) { events.set(name, handler); },
     sendMessage(message, options) { sent.push({ message, options }); },
-    getActiveTools: () => [...tools.keys()],
+    getActiveTools: () => active ?? [...tools.values()].filter((tool) => tool.name !== 'tool_search' && (tool.exposure ?? 'direct') === 'direct').map((tool) => tool.name),
+    getAllTools: () => [...tools.values()],
     setActiveTools(names) { active = names; },
   });
   const notes = [];
@@ -44,12 +46,34 @@ test('a lead gets five static delegation tools, and a child gets none', async ()
   assert.equal([...child.tools.keys()].some((name) => ['delegate', 'children', 'steer_child', 'stop_child', 'merge_child'].includes(name)), false);
 });
 
-test('a non-TUI top-level session deactivates the delegation tools', async () => {
+test('lead, propose, and job tools are deferred with annotations; session_status stays direct', async () => {
+  const s = setup({ runtime: await memoryRuntime() });
+  for (const name of ['delegate', 'children', 'steer_child', 'stop_child', 'merge_child', 'work_propose', 'job_register']) assert.equal(s.tools.get(name).exposure, 'deferred', name);
+  assert.equal(s.tools.get('session_status').exposure, undefined);
+  assert.deepEqual(s.tools.get('children').annotations, { readOnlyHint: true });
+  assert.deepEqual(s.tools.get('stop_child').annotations, { destructiveHint: true });
+  assert.deepEqual(s.tools.get('merge_child').annotations, { destructiveHint: true });
+});
+
+test('a TUI lead activates tool_search so it can load the deferred tools', async () => {
+  const s = setup({ runtime: await memoryRuntime() });
+  await s.emit('session_start', { reason: 'startup' });
+  assert.ok(s.active().includes('tool_search'));
+  assert.ok(s.active().includes('session_status'));
+  assert.equal(s.active().includes('delegate'), false);
+});
+
+test('a TUI lead without tool_search warns that the deferred tools cannot be called', async () => {
+  const s = setup({ runtime: await memoryRuntime(), toolSearch: false });
+  await s.emit('session_start', { reason: 'startup' });
+  assert.equal(s.active(), undefined);
+  assert.ok(s.notes.some((note) => note.level === 'warning' && /tool_search/.test(note.message)));
+});
+
+test('a non-TUI top-level session leaves the active tools alone', async () => {
   const s = setup({ runtime: await memoryRuntime(), mode: 'rpc' });
   await s.emit('session_start', { reason: 'startup' });
-  assert.equal(s.active().includes('delegate'), false);
-  assert.equal(s.active().includes('merge_child'), false);
-  assert.ok(s.active().includes('session_status'));
+  assert.equal(s.active(), undefined);
 });
 
 test('a TUI lead start shows children config warnings and reports interrupted runs once', async () => {

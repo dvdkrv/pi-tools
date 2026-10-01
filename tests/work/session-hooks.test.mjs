@@ -40,6 +40,7 @@ function setup({ runtime, env = IN_TMUX, mode = 'tui' } = {}) {
     registerTool(definition) { tools.set(definition.name, definition); },
     on(name, handler) { events.set(name, handler); },
     getActiveTools: () => [...tools.keys()],
+    getAllTools: () => [{ name: 'tool_search' }],
     setActiveTools() {},
   });
   const notes = [];

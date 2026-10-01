@@ -62,6 +62,9 @@ test('Pi commands and needs-me response times are recorded without content', asy
     registerCommand(name, definition) { commands.set(name, definition.handler); },
     registerTool() {},
     on(name, handler) { events.set(name, handler); },
+    getAllTools: () => [{ name: 'tool_search' }],
+    getActiveTools: () => [],
+    setActiveTools() {},
   });
   const ctx = { cwd: '/src/api', mode: 'tui', hasUI: true, sessionManager: { getSessionId: () => 's1', getSessionFile: () => undefined, getSessionName: () => undefined }, ui: { notify() {}, setStatus() {} } };
   await commands.get('todo')('secret title', ctx);

@@ -58,6 +58,10 @@ export const SESSION_STATUS_DESCRIPTION = "Write your complete reply to the user
 
 export const JOB_REGISTER_DESCRIPTION = "Register a background job you started, such as a cron entry or a long-running process, so the user can see its health on the work dashboard. Give a check_command that exits 0 when the job is healthy, and a stop_command when stopping needs more than SIGTERM to pid. Registering the same name again updates the job.";
 
+const TOOL_SEARCH = "tool_search";
+// session_status stays direct: every turn ends with it.
+export const DEFERRED_TOOLS: readonly string[] = ["work_propose", "job_register", ...LEAD_TOOLS];
+
 const WORK_BIN = fileURLToPath(new URL("../bin/work.ts", import.meta.url));
 
 // Aliases do not reach tmux popups, so the popup runs Node and bin/work.ts by absolute path.
@@ -85,6 +89,9 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		};
 		const repoOf = options.repoFromCwd ?? ((cwd: string) => repoFromCwd(cwd));
 		const env = options.env ?? process.env;
+		// Without a session bus, D-Bus clients in shell commands (gh, secret tools) autolaunch a dbus-daemon
+		// that outlives the command. Every command this session runs inherits the setting.
+		if (env.DBUS_SESSION_BUS_ADDRESS === undefined) env.DBUS_SESSION_BUS_ADDRESS = "disabled:";
 		const sessionTmux = options.tmux ?? tmuxRunner();
 		let warn: (message: string) => void = () => {};
 		const tracker = createSessionTracker({
@@ -159,7 +166,7 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 				return warning ? { content: [...event.content, { type: "text" as const, text: warning }] } : undefined;
 			});
 		}
-		// Lead mode: delegation tools in every session that is not itself a child (only TUI sessions keep them active).
+		// Lead mode: deferred delegation tools in every session that is not itself a child.
 		const notifyLead = (text: string): void => {
 			pi.sendMessage({ customType: CHILD_MESSAGE, content: text, display: true }, { deliverAs: "followUp", triggerTurn: true });
 		};
@@ -175,12 +182,16 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 				},
 			});
 		}
+		// Deferred tools are reachable only through tool_search, which Pi registers inactive.
+		const ensureToolSearch = (ctx: ExtensionContext): void => {
+			const active = pi.getActiveTools();
+			if (active.includes(TOOL_SEARCH)) return;
+			if (pi.getAllTools().some((tool) => tool.name === TOOL_SEARCH)) pi.setActiveTools([...active, TOOL_SEARCH]);
+			else ctx.ui.notify(`${DEFERRED_TOOLS.join(", ")} need the tool_search tool, which is not available; they cannot be called.`, "warning");
+		};
 		const startLead = (ctx: ExtensionContext): void => {
-			if (!supervisor) return;
-			if (ctx.mode !== "tui") {
-				pi.setActiveTools(pi.getActiveTools().filter((name) => !LEAD_TOOLS.includes(name)));
-				return;
-			}
+			if (!supervisor || ctx.mode !== "tui") return;
+			ensureToolSearch(ctx);
 			try {
 				const r = rt();
 				for (const warning of r.warnings) if (warning.startsWith("children")) ctx.ui.notify(warning, "warning");
@@ -222,6 +233,7 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		pi.registerTool({
 			name: "work_propose",
 			label: "Work Propose",
+			exposure: "deferred",
 			description: PROPOSE_DESCRIPTION,
 			parameters: Type.Object({
 				title: Type.String({ minLength: 3, maxLength: 120 }),
@@ -263,6 +275,7 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		pi.registerTool({
 			name: "job_register",
 			label: "Job Register",
+			exposure: "deferred",
 			description: JOB_REGISTER_DESCRIPTION,
 			parameters: Type.Object({
 				name: Type.String({ minLength: 1, maxLength: 80 }),

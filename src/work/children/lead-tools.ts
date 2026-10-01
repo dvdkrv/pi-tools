@@ -6,6 +6,8 @@ import { CONTEXT_MAX, GOAL_MAX } from "./brief.ts";
 import type { Supervisor } from "./supervisor.ts";
 
 export const LEAD_TOOLS: readonly string[] = ["delegate", "children", "steer_child", "stop_child", "merge_child"];
+// Lead tools are deferred: the model loads them with tool_search when it needs them, so they cost no prompt otherwise.
+const EXPOSURE = "deferred" as const;
 export const CHILD_MESSAGE = "work-child";
 
 export const DELEGATE_DESCRIPTION = "Hand a task to a headless child agent and keep working; its result arrives later as one message. kind implement: the child works in its own worktree and branch from your current HEAD (commit first), may change only `scope`, and must pass `acceptance`, which are targeted test commands, never full suites. kind read-only: it investigates in your directory without editing. Keep briefs small: a one-sentence goal, a tight scope, and a budget only as large as needed. `from: C-<n>` continues an earlier run's branch.";
@@ -25,6 +27,7 @@ function reply(text: string, details: Record<string, unknown> = {}) {
 export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
 	pi.registerTool({
 		name: "delegate",
+		exposure: EXPOSURE,
 		label: "Delegate",
 		description: DELEGATE_DESCRIPTION,
 		parameters: Type.Object({
@@ -47,6 +50,8 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
 
 	pi.registerTool({
 		name: "children",
+		exposure: EXPOSURE,
+		annotations: { readOnlyHint: true },
 		label: "Children",
 		description: CHILDREN_DESCRIPTION,
 		parameters: Type.Object({}),
@@ -57,6 +62,7 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
 
 	pi.registerTool({
 		name: "steer_child",
+		exposure: EXPOSURE,
 		label: "Steer Child",
 		description: STEER_DESCRIPTION,
 		parameters: Type.Object({ id: RUN_ID, text: Type.String({ minLength: 1, maxLength: CONTEXT_MAX }), urgent: Type.Optional(Type.Boolean()) }),
@@ -67,6 +73,8 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
 
 	pi.registerTool({
 		name: "stop_child",
+		exposure: EXPOSURE,
+		annotations: { destructiveHint: true },
 		label: "Stop Child",
 		description: STOP_DESCRIPTION,
 		parameters: Type.Object({ id: RUN_ID, discard: Type.Optional(Type.Boolean()) }),
@@ -77,6 +85,8 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
 
 	pi.registerTool({
 		name: "merge_child",
+		exposure: EXPOSURE,
+		annotations: { destructiveHint: true },
 		label: "Merge Child",
 		description: MERGE_DESCRIPTION,
 		parameters: Type.Object({ id: RUN_ID }),

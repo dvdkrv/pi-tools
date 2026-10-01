@@ -13,6 +13,9 @@ function setup(runtime, env = {}) {
     registerCommand(name, definition) { commands.set(name, definition.handler); },
     registerTool(definition) { tools.set(definition.name, definition); },
     on(name, handler) { events.set(name, handler); },
+    getAllTools: () => [{ name: 'tool_search' }],
+    getActiveTools: () => [],
+    setActiveTools() {},
   });
   return { commands, tools, events };
 }
@@ -93,6 +96,9 @@ test('/dash opens the dashboard in a tmux popup, and warns outside tmux', async 
     registerCommand(name, definition) { commands.set(name, definition.handler); },
     registerTool() {},
     on() {},
+    getAllTools: () => [{ name: 'tool_search' }],
+    getActiveTools: () => [],
+    setActiveTools() {},
   });
   const c = context();
   make({});
@@ -123,4 +129,13 @@ test('a bash call without a timeout gets the bashTimeoutMinutes default; one wit
   const input = { command: 'ls', timeout: 0 };
   await defaults.events.get('tool_call')({ toolName: 'bash', input }, context().ctx);
   assert.equal(input.timeout, 1800);
+});
+
+test('loading the extension disables D-Bus autolaunch for every command the session runs, unless a bus is set', () => {
+  const unset = {};
+  setup(undefined, unset);
+  assert.equal(unset.DBUS_SESSION_BUS_ADDRESS, 'disabled:');
+  const set = { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1/bus' };
+  setup(undefined, set);
+  assert.equal(set.DBUS_SESSION_BUS_ADDRESS, 'unix:path=/run/user/1/bus');
 });

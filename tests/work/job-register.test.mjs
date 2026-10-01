@@ -38,6 +38,9 @@ test('job_register is static and registers for the calling session', async () =>
     registerCommand() {},
     registerTool(definition) { tools.set(definition.name, definition); },
     on() {},
+    getAllTools: () => [{ name: 'tool_search' }],
+    getActiveTools: () => [],
+    setActiveTools() {},
   });
   const tool = tools.get('job_register');
   assert.equal(tool.description, JOB_REGISTER_DESCRIPTION);
