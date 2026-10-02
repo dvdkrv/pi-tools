@@ -13,7 +13,7 @@ const THEME = { fg: (_color, text) => text, bold: (text) => text };
 const PARAMS = { question: 'Which runner should the tests use?', options: [{ label: 'node:test' }, { label: 'vitest', description: 'Adds a dependency' }], recommended: 0 };
 
 // A fake Pi: ctx.ui.custom builds the component and hands it to `onOpen`, which plays the user.
-function setup({ runtime, env = IN_TMUX, mode = 'tui', onOpen = () => {} } = {}) {
+function setup({ runtime, env = IN_TMUX, mode = 'tui', onOpen = () => {}, beforeBuild = () => {} } = {}) {
   const tools = new Map();
   const events = new Map();
   const writes = [];
@@ -51,6 +51,7 @@ function setup({ runtime, env = IN_TMUX, mode = 'tui', onOpen = () => {} } = {})
       notify() {},
       setStatus() {},
       custom: (factory) => new Promise((resolve) => {
+        beforeBuild();
         const component = factory({ requestRender() {} }, THEME, undefined, resolve);
         onOpen(component);
       }),
@@ -126,6 +127,25 @@ test('an aborted run closes the dialog as dismissed', async () => {
   await s.emit('session_start', { reason: 'startup' });
   const result = await s.ask(PARAMS, controller.signal);
   assert.equal(result.content[0].text, ASK_USER_DISMISSED);
+});
+
+test('a run aborted before the dialog opens finishes as dismissed instead of leaving the dialog open', async () => {
+  const rt = await memoryRuntime();
+  const early = new AbortController();
+  early.abort();
+  const s = setup({ runtime: rt, onOpen: () => assert.fail('dialog opened') });
+  await s.emit('session_start', { reason: 'startup' });
+  const before = await s.ask(PARAMS, early.signal);
+  assert.equal(before.content[0].text, ASK_USER_DISMISSED);
+  assert.equal(s.writes.length, 0);
+  assert.equal(rt.store.getSession('sess-1').status, 'needs-me');
+
+  // Aborted after the status is set but before Pi builds the component: no abort event is left to fire.
+  const late = new AbortController();
+  const t = setup({ runtime: await memoryRuntime(), beforeBuild: () => late.abort() });
+  await t.emit('session_start', { reason: 'startup' });
+  const during = await Promise.race([t.ask(PARAMS, late.signal), new Promise((resolve) => setTimeout(() => resolve('still open'), 200))]);
+  assert.equal(during.content?.[0].text, ASK_USER_DISMISSED);
 });
 
 test('a recommended index out of range is reported without opening the dialog', async () => {

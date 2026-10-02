@@ -343,11 +343,15 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 					if (ctx.mode !== "tui" || !ctx.hasUI) return reply(ASK_USER_NO_UI, null);
 					const problem = askUserProblem(params);
 					if (problem) return reply(problem, null);
+					const dismissed: AskUserAnswer = { kind: "dismissed" };
+					if (signal?.aborted) return reply(answerText(dismissed), dismissed);
 					notifySession(ctx, tracker.asking(askUserNote(params)));
 					try {
 						const answer = await ctx.ui.custom<AskUserAnswer>((tui, theme, _keybindings, done) => {
 							// An aborted run (Ctrl+C, a lead shutting down) closes the dialog as dismissed.
-							signal?.addEventListener("abort", () => done({ kind: "dismissed" }), { once: true });
+							// An abort before the dialog is built fires no event, so check it here too.
+							if (signal?.aborted) done(dismissed);
+							else signal?.addEventListener("abort", () => done(dismissed), { once: true });
 							return askUserComponent(params, tui, theme, done);
 						});
 						return reply(answerText(answer), answer);
