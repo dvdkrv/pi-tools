@@ -262,6 +262,27 @@ test('a child stopped from the dashboard is reported to the lead once', async ()
   assert.match(l.messages[0], /^Child C-1 finished: stopped\nGoal: Add retry to fetchJira\nSummary: stopped from the dashboard/);
 });
 
+// The lead can act on a run while its acceptance still runs, before the result message is sent.
+for (const [label, act, outcome] of [
+  ['stopped by the lead', (l) => l.supervisor.stop('lead-1', 'C-1', false), 'stopped'],
+  ['discarded', (l) => l.supervisor.stop('lead-1', 'C-1', true), 'discarded'],
+  ['merged', (l) => {
+    l.store.endChildRun('C-1', { outcome: 'done', summary: 'Added retry' }, 'session:lead-1');
+    l.store.markChildRunMerged('C-1', 'session:lead-1');
+  }, 'merged'],
+]) {
+  test(`a run already ${label} when its result is ready sends no message`, async () => {
+    const mark = join(tempDir(), 'acceptance-started');
+    const l = await lead({ behavior: { commit: COMMIT } });
+    l.supervisor.delegate('lead-1', l.repo, implement({ acceptance: [`touch ${mark} && sleep 1 && test -f src/retry.ts`] }));
+    await until(() => existsSync(mark));
+    await act(l);
+    assert.equal(l.store.getChildRun('C-1').outcome, outcome);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.deepEqual(l.messages, []);
+  });
+}
+
 test('shutdownAll ends even a stubborn child and leaves its run for recovery', async () => {
   const l = await lead({ behavior: { onPrompt: 'hang', ignoreStdinClose: true, ignoreTerm: true } });
   l.supervisor.delegate('lead-1', l.repo, implement());

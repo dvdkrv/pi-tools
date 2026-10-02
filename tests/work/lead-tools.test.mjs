@@ -9,7 +9,7 @@ const { createWorkExtension } = await load('extensions/work.ts');
 const FAKE = fileURLToPath(new URL('./fixtures/fake-rpc-child.mjs', import.meta.url));
 const READ_ONLY = { goal: 'Map the auth flow', kind: 'read-only', scope: [], nonGoals: [], acceptance: [], context: '', model: null, modelReason: null, from: null };
 
-function setup({ runtime, env = {}, mode = 'tui', supervisor = {}, toolSearch = true }) {
+function setup({ runtime, env = {}, mode = 'tui', supervisor = {}, toolSearch = true, idle }) {
   const tools = new Map();
   const events = new Map();
   const sent = [];
@@ -33,6 +33,7 @@ function setup({ runtime, env = {}, mode = 'tui', supervisor = {}, toolSearch = 
     sessionManager: { getSessionId: () => 'lead-1', getSessionFile: () => undefined, getSessionName: () => undefined },
     ui: { notify: (message, level) => notes.push({ message, level }), setStatus() {} },
     abort() {}, shutdown() {},
+    ...(idle ? { isIdle: () => idle.value } : {}),
   };
   const run = (name, params) => tools.get(name).execute('call-1', params, undefined, undefined, ctx);
   return { tools, sent, notes, ctx, run, active: () => active, emit: (name, event = {}) => events.get(name)(event, ctx) };
@@ -110,4 +111,25 @@ test('delegate, children, stop_child, and merge_child work end to end with a fak
   assert.equal((await s.run('merge_child', { id: 'C-1' })).content[0].text, 'Refused: C-1 is not one of your implement runs.');
   assert.equal((await s.run('stop_child', { id: 'C-1', discard: true })).content[0].text, 'Discarded C-1.');
   assert.match((await s.run('steer_child', { id: 'C-1', text: 'hi' })).content[0].text, /can no longer be steered/);
+});
+
+test('a child result triggers a turn only when the lead is idle; a busy lead gets it as context for its next request', async () => {
+  const rt = await memoryRuntime();
+  rt.store.startSession({ id: 'child-s1', file: null, cwd: '/src/api', name: null, pid: 1, tmuxPane: null, tmuxWindow: null, parentSession: 'lead-1', headless: true });
+  rt.store.setSessionStatus('child-s1', 'done', 'Found it', 'agent');
+  const idle = { value: false };
+  const s = setup({
+    runtime: rt, idle,
+    supervisor: { command: [process.execPath, FAKE], env: { PATH: process.env.PATH, FAKE_CHILD: JSON.stringify({ sessionId: 'child-s1' }), FAKE_CHILD_LOG: join(tempDir(), 'child.jsonl') }, killGraceMs: 200 },
+  });
+  await s.emit('session_start', { reason: 'startup' });
+  await s.run('delegate', { goal: 'Map the auth flow', kind: 'read-only' });
+  await until(() => s.sent.length === 1);
+  assert.match(s.sent[0].message.content, /^Child C-1 finished: done/);
+  assert.deepEqual(s.sent[0].options, { deliverAs: 'followUp', triggerTurn: false });
+  idle.value = true;
+  await s.run('delegate', { goal: 'Map the auth flow again', kind: 'read-only' });
+  await until(() => s.sent.length === 2);
+  assert.match(s.sent[1].message.content, /^Child C-2 finished: done/);
+  assert.deepEqual(s.sent[1].options, { deliverAs: 'followUp', triggerTurn: true });
 });

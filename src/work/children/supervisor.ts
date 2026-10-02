@@ -85,6 +85,11 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 	const git = deps.git ?? runGit;
 	const grace = deps.killGraceMs ?? KILL_GRACE_MS;
 	const handles = new Map<string, Handle>();
+	// Runs the lead stopped itself; a stop from the dashboard is still reported, since the lead did not see it.
+	const stoppedByLead = new Set<string>();
+	// The lead already acted on such a run (it can, while acceptance runs), so its result would only cost a turn.
+	const alreadyHandled = (run: ChildRun): boolean =>
+		run.outcome === "merged" || run.outcome === "discarded" || (run.outcome === "stopped" && stoppedByLead.has(run.id));
 	const actorOf = (run: ChildRun): `session:${string}` => `session:${run.leadSession}`;
 
 	function delegate(leadSession: string, cwd: string, params: BriefParams): DelegateResult {
@@ -224,7 +229,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 				}
 				run = store.endChildRun(id, end, actorOf(run));
 			}
-			if (!handle.stopping) deps.notify(renderResult(run, deps.config()));
+			if (!handle.stopping && !alreadyHandled(run)) deps.notify(renderResult(run, deps.config()));
 		} catch (error) {
 			if (!handle.stopping) deps.notify(`Child ${id} ended, but recording its result failed: ${errorMessage(error)}`);
 		} finally {
@@ -332,6 +337,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 		if (!run) return `${id} is not one of your child runs.`;
 		const handle = handles.get(id);
 		const wasRunning = handle !== undefined || run.outcome === "running";
+		if (wasRunning) stoppedByLead.add(id);
 		if (handle) {
 			handle.stopping = true;
 			try {

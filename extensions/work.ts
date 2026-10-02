@@ -169,8 +169,18 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			});
 		}
 		// Lead mode: deferred delegation tools in every session that is not itself a child.
+		// A busy lead gets the message as context for its next request instead of a turn of its own:
+		// it often learns the result through `children` first, and a late turn would only say "already handled".
+		let leadCtx: ExtensionContext | undefined;
+		const leadIdle = (): boolean => {
+			try {
+				return leadCtx?.isIdle?.() ?? true;
+			} catch {
+				return true;
+			}
+		};
 		const notifyLead = (text: string): void => {
-			pi.sendMessage({ customType: CHILD_MESSAGE, content: text, display: true }, { deliverAs: "followUp", triggerTurn: true });
+			pi.sendMessage({ customType: CHILD_MESSAGE, content: text, display: true }, { deliverAs: "followUp", triggerTurn: leadIdle() });
 		};
 		const supervisor = childRunId
 			? undefined
@@ -192,7 +202,9 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			else ctx.ui.notify(`${DEFERRED_TOOLS.join(", ")} need the tool_search tool, which is not available; they cannot be called.`, "warning");
 		};
 		const startLead = (ctx: ExtensionContext): void => {
-			if (!supervisor || ctx.mode !== "tui") return;
+			if (!supervisor) return;
+			leadCtx = ctx;
+			if (ctx.mode !== "tui") return;
 			ensureToolSearch(ctx);
 			try {
 				const r = rt();

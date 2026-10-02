@@ -17,13 +17,3 @@ test('a result for a live run offers to continue or discard', () => {
   assert.match(text, /Next: delegate again with from: C-3/);
   assert.match(text, /Branch: child\/feat\/C-3/);
 });
-
-test('a late result for a discarded or merged run does not offer to delegate again or discard', () => {
-  const discarded = renderResult(run({ outcome: 'discarded' }), DEFAULT_CHILDREN);
-  assert.match(discarded, /^Child C-3 finished: discarded/);
-  assert.doesNotMatch(discarded, /delegate again|discard: true|Branch:/);
-  assert.match(discarded, /already discarded, so there is nothing left to do/);
-  const merged = renderResult(run({ outcome: 'merged' }), DEFAULT_CHILDREN);
-  assert.doesNotMatch(merged, /delegate again|discard: true|merge_child/);
-  assert.match(merged, /already merged/);
-});
