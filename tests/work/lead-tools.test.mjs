@@ -39,6 +39,12 @@ function setup({ runtime, env = {}, mode = 'tui', supervisor = {}, toolSearch = 
   return { tools, sent, notes, ctx, run, active: () => active, emit: (name, event = {}) => events.get(name)(event, ctx) };
 }
 
+test('delegate and merge_child forbid taking over-budget or over-spend commits by hand', async () => {
+  const lead = setup({ runtime: await memoryRuntime() });
+  const rule = "Never take an over-budget or over-spend run's commits by hand; continue it with from:, or ask the user.";
+  for (const name of ['delegate', 'merge_child']) assert.ok(lead.tools.get(name).description.endsWith(rule), name);
+});
+
 test('a lead gets five static delegation tools, and a child gets none', async () => {
   const lead = setup({ runtime: await memoryRuntime() });
   for (const name of ['delegate', 'children', 'steer_child', 'stop_child', 'merge_child']) assert.ok(lead.tools.has(name), name);

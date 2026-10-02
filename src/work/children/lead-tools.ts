@@ -10,11 +10,13 @@ export const LEAD_TOOLS: readonly string[] = ["delegate", "children", "steer_chi
 const EXPOSURE = "deferred" as const;
 export const CHILD_MESSAGE = "work-child";
 
-export const DELEGATE_DESCRIPTION = "Hand a task to a headless child agent and keep working; its result arrives later as one message. kind implement: the child works in its own worktree and branch from your current HEAD (commit first), may change only `scope`, and must pass `acceptance`, which are targeted test commands, never full suites. kind read-only: it investigates without editing. Optional `repo` is an absolute git repository path to run in instead of your cwd. Keep briefs small: a one-sentence goal, a tight scope, and a budget only as large as needed. `from: C-<n>` continues an earlier run's branch.";
+// Guards hold only if the lead cannot route around them, so both tools say so.
+export const NO_BYPASS = "Never take an over-budget or over-spend run's commits by hand; continue it with from:, or ask the user.";
+export const DELEGATE_DESCRIPTION = "Hand a task to a headless child agent and keep working; its result arrives later as one message. kind implement: the child works in its own worktree and branch from your current HEAD (commit first), may change only `scope`, and must pass `acceptance`, which are targeted test commands, never full suites. kind read-only: it investigates without editing. Optional `repo` is an absolute git repository path to run in instead of your cwd. Keep briefs small: a one-sentence goal, a tight scope, and a budget only as large as needed. `from: C-<n>` continues an earlier run's branch. " + NO_BYPASS;
 export const CHILDREN_DESCRIPTION = "List your child runs: state, model, spend, diff against budget, acceptance results, and each child's note.";
 export const STEER_DESCRIPTION = "Send guidance to a running child. By default it arrives at the child's next quiet moment; urgent: true delivers it right after the child's current tool calls.";
 export const STOP_DESCRIPTION = "Stop a running child and end its process. Its worktree and branch are kept unless discard: true, which also removes them. Discard also works on finished runs.";
-export const MERGE_DESCRIPTION = "Merge a done child whose acceptance passed into your branch (review its diff with git first), push without force, and create or update the draft PR. It never marks the PR ready or merges it.";
+export const MERGE_DESCRIPTION = "Merge a done child whose acceptance passed into your branch (review its diff with git first), push without force, and create or update the draft PR. It never marks the PR ready or merges it. " + NO_BYPASS;
 
 export type LeadToolDeps = { supervisor: Supervisor; merge: (leadSession: string, cwd: string, id: string) => Promise<string> };
 
