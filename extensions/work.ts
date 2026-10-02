@@ -342,20 +342,23 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 					const reply = (text: string, answer: AskUserAnswer | null) => ({ content: [{ type: "text" as const, text }], details: { answer } });
 					if (ctx.mode !== "tui" || !ctx.hasUI) return reply(ASK_USER_NO_UI, null);
 					const problem = askUserProblem(params);
-					if (problem) return reply(problem, null);
+					if (problem) return { ...reply(problem, null), isError: true };
 					const dismissed: AskUserAnswer = { kind: "dismissed" };
 					if (signal?.aborted) return reply(answerText(dismissed), dismissed);
 					notifySession(ctx, tracker.asking(askUserNote(params)));
+					let onAbort: (() => void) | undefined;
 					try {
 						const answer = await ctx.ui.custom<AskUserAnswer>((tui, theme, _keybindings, done) => {
-							// An aborted run (Ctrl+C, a lead shutting down) closes the dialog as dismissed.
+							// A run aborted from outside (a lead shutting down, a signal) closes the dialog as dismissed.
 							// An abort before the dialog is built fires no event, so check it here too.
-							if (signal?.aborted) done(dismissed);
-							else signal?.addEventListener("abort", () => done(dismissed), { once: true });
+							onAbort = () => done(dismissed);
+							if (signal?.aborted) onAbort();
+							else signal?.addEventListener("abort", onAbort, { once: true });
 							return askUserComponent(params, tui, theme, done);
 						});
 						return reply(answerText(answer), answer);
 					} finally {
+						if (onAbort) signal?.removeEventListener("abort", onAbort);
 						tracker.answered();
 					}
 				},

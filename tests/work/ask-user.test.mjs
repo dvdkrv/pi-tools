@@ -100,6 +100,22 @@ test('Esc dismisses', () => {
   assert.deepEqual(h.answers, [{ kind: 'dismissed' }]);
 });
 
+test('Ctrl+C dismisses from the options and from text entry', () => {
+  const options = harness(base);
+  options.press('\x03');
+  assert.deepEqual(options.answers, [{ kind: 'dismissed' }]);
+  const editing = harness(base);
+  editing.press('G', '\r', 'h', '\x03');
+  assert.deepEqual(editing.answers, [{ kind: 'dismissed' }]);
+});
+
+test('askUserNote is one line and cuts by code point', () => {
+  assert.equal(askUser.askUserNote({ question: 'Ship\nit?', options: [{ label: 'Yes\tnow' }, { label: 'No' }] }), 'Ship it? [Yes now / No]');
+  const emoji = askUser.askUserNote({ question: '🚀'.repeat(300), options: base.options });
+  assert.equal([...emoji].length, 200);
+  assert.ok(emoji.endsWith('🚀… [Ship now / Wait / Abandon]'));
+});
+
 test('the context renders above the question', () => {
   const h = harness({ ...base, context: 'CI is red on main.' });
   const lines = h.lines();

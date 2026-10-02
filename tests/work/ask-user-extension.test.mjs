@@ -129,6 +129,15 @@ test('an aborted run closes the dialog as dismissed', async () => {
   assert.equal(result.content[0].text, ASK_USER_DISMISSED);
 });
 
+test('the abort listener is removed once the question is answered', async () => {
+  const listeners = new Set();
+  const signal = { aborted: false, addEventListener: (_type, fn) => listeners.add(fn), removeEventListener: (_type, fn) => listeners.delete(fn) };
+  const s = setup({ runtime: await memoryRuntime(), onOpen: (component) => { assert.equal(listeners.size, 1); keys(component, '\r'); } });
+  await s.emit('session_start', { reason: 'startup' });
+  await s.ask(PARAMS, signal);
+  assert.equal(listeners.size, 0);
+});
+
 test('a run aborted before the dialog opens finishes as dismissed instead of leaving the dialog open', async () => {
   const rt = await memoryRuntime();
   const early = new AbortController();
@@ -153,6 +162,7 @@ test('a recommended index out of range is reported without opening the dialog', 
   const s = setup({ runtime: rt, onOpen: () => assert.fail('dialog opened') });
   await s.emit('session_start', { reason: 'startup' });
   const result = await s.ask({ ...PARAMS, recommended: 5 });
+  assert.equal(result.isError, true);
   assert.equal(result.details.answer, null);
   assert.equal(rt.store.getSession('sess-1').status, 'needs-me');
   assert.equal(s.writes.length, 0);

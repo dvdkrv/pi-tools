@@ -38,12 +38,18 @@ export function askUserProblem(input: AskUserInput): string | undefined {
 	return undefined;
 }
 
+const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+// Counts and cuts by code point, so an emoji is never split.
+const cut = (text: string, length: number): string => [...text].slice(0, length).join("");
+
 export function askUserNote(input: AskUserInput): string {
-	const labels = ` [${input.options.map((option) => option.label).join(" / ")}]`;
-	const full = input.question + labels;
-	if (full.length <= NOTE_MAX) return full;
-	if (labels.length + 2 > NOTE_MAX) return `${full.slice(0, NOTE_MAX - 1)}…`;
-	return `${input.question.slice(0, NOTE_MAX - labels.length - 1)}…${labels}`;
+	const question = oneLine(input.question);
+	const labels = ` [${input.options.map((option) => oneLine(option.label)).join(" / ")}]`;
+	const full = question + labels;
+	const size = (text: string) => [...text].length;
+	if (size(full) <= NOTE_MAX) return full;
+	if (size(labels) + 2 > NOTE_MAX) return `${cut(full, NOTE_MAX - 1)}…`;
+	return `${cut(question, NOTE_MAX - size(labels) - 1)}…${labels}`;
 }
 
 export function answerText(answer: AskUserAnswer): string {
@@ -65,6 +71,8 @@ export function askUserComponent(
 	let editing = false;
 	let keys: KeyState = INITIAL_KEY_STATE;
 	const answer = new Input({ placeholder: "your answer" });
+	// It receives keys only while editing; focus places the terminal cursor in the field.
+	answer.focused = true;
 
 	const refresh = () => {
 		tui.requestRender();
@@ -113,6 +121,11 @@ export function askUserComponent(
 			return lines.map((line) => truncateToWidth(line, w));
 		},
 		handleInput(data: string): void {
+			// The dialog has focus, so Pi never sees Ctrl+C: treat it as dismissing, in either mode.
+			if (parseKey(data) === "ctrl+c") {
+				done({ kind: "dismissed" });
+				return;
+			}
 			if (editing) {
 				if (parseKey(data) === "escape") {
 					leaveEditing();
