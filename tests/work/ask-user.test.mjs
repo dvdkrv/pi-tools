@@ -77,7 +77,7 @@ test('Esc in text entry returns to the options without answering', () => {
   assert.match(selectedLine(h), /Type something else…/);
   h.press('\r');
   assert.match(h.text(), /Your answer:/);
-  assert.doesNotMatch(h.text(), /hi/);
+  assert.doesNotMatch(h.lines().find((line) => line.startsWith('> ') && !line.includes('Type something')), /hi/);
 });
 
 test('Enter with empty text leaves text entry', () => {
@@ -111,7 +111,7 @@ test('askUserNote lists the options and stays within the note limit', () => {
   const long = askUser.askUserNote({ question: 'Q'.repeat(300), options: base.options });
   assert.equal(long.length, 200);
   assert.ok(long.endsWith('… [Ship now / Wait / Abandon]'));
-  const hugeOptions = askUser.askUserNote({ question: 'Pick', options: [{ label: 'A'.repeat(60) }, { label: 'B'.repeat(60) }, { label: 'C'.repeat(60) }] });
+  const hugeOptions = askUser.askUserNote({ question: 'Pick', options: ['A', 'B', 'C', 'D'].map((c) => ({ label: c.repeat(60) })) });
   assert.equal(hugeOptions.length, 200);
   assert.ok(hugeOptions.endsWith('…'));
 });

@@ -1,3 +1,4 @@
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Input, parseKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
@@ -29,7 +30,6 @@ export const AskUserParams = Type.Object({
 export type AskUserInput = Static<typeof AskUserParams>;
 export type AskUserAnswer = { kind: "option"; index: number; label: string } | { kind: "other"; text: string } | { kind: "dismissed" };
 
-type Theme = { fg: (color: string, text: string) => string; bold: (text: string) => string };
 
 export function askUserProblem(input: AskUserInput): string | undefined {
 	const { recommended, options } = input;
@@ -55,7 +55,7 @@ export function answerText(answer: AskUserAnswer): string {
 export function askUserComponent(
 	input: AskUserInput,
 	tui: { requestRender(): void },
-	theme: Theme,
+	theme: Pick<Theme, "fg" | "bold">,
 	done: (answer: AskUserAnswer) => void,
 ): { render(width: number): string[]; invalidate(): void; handleInput(data: string): void } {
 	const allowOther = input.allow_other !== false;
