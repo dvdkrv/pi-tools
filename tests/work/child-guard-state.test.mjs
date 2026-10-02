@@ -126,13 +126,39 @@ test('an unpriced run marks spend unknown and never warns, aborts, or enforces t
 
 test('a read-only run blocks edits and flags shell commands that change the lead directory', () => {
   const { guard, dir, records } = guarded({ run: { kind: 'read-only', budgetLines: null, budgetFiles: null, baseCommit: null } });
+  const bash = (change = () => {}) => {
+    assert.equal(guard.toolCall('bash', { command: 'ls' }), undefined);
+    change();
+    return guard.toolResult('bash');
+  };
   assert.match(guard.toolCall('write', { path: 'src/a.ts' }).reason, /read-only run/);
-  assert.equal(guard.toolResult('bash'), undefined);
-  writeFiles(dir, { 'notes.txt': 'x\n' });
-  assert.match(guard.toolResult('bash'), /changed files in the lead's working directory/);
-  assert.equal(guard.toolResult('bash'), undefined);
+  assert.equal(bash(), undefined);
+  assert.match(bash(() => writeFiles(dir, { 'notes.txt': 'x\n' })), /changed files in the lead's working directory/);
+  assert.equal(bash(() => writeFiles(dir, { 'more.txt': 'y\n' })), undefined);
   assert.deepEqual(merged(records), { flags: ['modified-files'] });
-  assert.equal(git(dir, 'status', '--porcelain'), '?? notes.txt');
+  assert.equal(git(dir, 'status', '--porcelain'), '?? more.txt\n?? notes.txt');
+});
+
+test("the lead's own edits and commits during a read-only run do not flag it", () => {
+  const { guard, dir, records } = guarded({ run: { kind: 'read-only', budgetLines: null, budgetFiles: null, baseCommit: null } });
+  const bash = (change = () => {}) => {
+    guard.toolCall('bash', { command: 'git log --oneline' });
+    change();
+    return guard.toolResult('bash');
+  };
+  // Between the child's commands, the lead edits, then commits.
+  writeFiles(dir, { 'src/a.ts': 'two\n', 'src/new.ts': 'new\n' });
+  assert.equal(bash(), undefined);
+  git(dir, 'add', '-A');
+  git(dir, 'commit', '-qm', 'lead work');
+  assert.equal(bash(), undefined);
+  // While a child command runs, the lead commits work it already had: HEAD moves and dirty entries only disappear.
+  writeFiles(dir, { 'src/a.ts': 'three\n' });
+  assert.equal(bash(), undefined);
+  assert.equal(bash(() => { git(dir, 'commit', '-qam', 'more lead work'); }), undefined);
+  assert.deepEqual(records.filter((record) => 'flags' in record), []);
+  // A command that does change files still flags.
+  assert.match(bash(() => writeFiles(dir, { 'src/a.ts': 'child edit\n' })), /changed files/);
 });
 
 test('without git the budget cannot be measured, so edits are blocked', () => {

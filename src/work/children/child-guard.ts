@@ -43,6 +43,30 @@ function gitStatus(git: GitRunner, cwd: string): string | undefined {
 	}
 }
 
+type TreeState = { status: string; head: string | null };
+
+function treeState(git: GitRunner, cwd: string): TreeState | undefined {
+	const status = gitStatus(git, cwd);
+	if (status === undefined) return undefined;
+	let head: string | null = null;
+	try {
+		head = git(cwd, ["rev-parse", "HEAD"]).trim();
+	} catch {
+		// An unborn branch has no HEAD yet.
+	}
+	return { status, head };
+}
+
+// A read-only child shares the lead's directory, and the lead keeps working: it edits and commits between the
+// child's commands. So only a change during one of the child's own commands counts, and a commit that moved HEAD
+// and only cleaned entries (it added no dirty path) is the lead's commit, not the child's edit.
+function changedByCommand(before: TreeState, after: TreeState): boolean {
+	if (after.status === before.status) return false;
+	if (after.head === before.head) return true;
+	const was = new Set(before.status.split("\n"));
+	return after.status.split("\n").some((line) => line !== "" && !was.has(line));
+}
+
 // Used before the run is loaded, or when it cannot be: reading stays possible, changing things does not.
 export function failClosedGuard(reason: string): ChildGuard {
 	return {
@@ -65,7 +89,8 @@ export function createChildGuard(deps: ChildGuardDeps): ChildGuard {
 	let spendWarned = false;
 	let pending: string | undefined;
 	let wipCommitted = false;
-	const leadStatus = implement ? undefined : gitStatus(git, cwd);
+	// Read-only runs: the lead directory's state when the child's current bash command started.
+	let beforeCommand: TreeState | undefined;
 
 	const flag = (name: ChildFlag): void => {
 		if (flags.has(name)) return;
@@ -139,6 +164,7 @@ export function createChildGuard(deps: ChildGuardDeps): ChildGuard {
 			if (reason) return { block: true, reason };
 			const requested = typeof input.timeout === "number" && input.timeout > 0 ? input.timeout : timeoutSeconds;
 			input.timeout = Math.min(requested, timeoutSeconds);
+			if (!implement && !flags.has("modified-files")) beforeCommand ??= treeState(git, cwd);
 			return undefined;
 		},
 		toolResult(toolName) {
@@ -151,9 +177,13 @@ export function createChildGuard(deps: ChildGuardDeps): ChildGuard {
 				const note = budgetNote();
 				if (note) notes.push(note);
 			}
-			if (!implement && toolName === "bash" && leadStatus !== undefined && !flags.has("modified-files") && gitStatus(git, cwd) !== leadStatus) {
-				flag("modified-files");
-				notes.push("Warning: that command changed files in the lead's working directory. They were left in place, and the lead will be told. This run is read-only.");
+			if (!implement && toolName === "bash" && beforeCommand) {
+				const after = treeState(git, cwd);
+				if (after && changedByCommand(beforeCommand, after)) {
+					flag("modified-files");
+					notes.push("Warning: that command changed files in the lead's working directory. They were left in place, and the lead will be told. This run is read-only.");
+				}
+				beforeCommand = undefined;
 			}
 			return notes.length > 0 ? notes.join("\n") : undefined;
 		},
