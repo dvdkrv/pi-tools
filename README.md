@@ -1,6 +1,6 @@
 # Pi Tools
 
-A single [Pi](https://github.com/earendil-works/pi-mono) package containing seven local-development extensions: `claude-skill`, `loop`, `messaging`, `task`, `theme-sync`, `work`, and `worktree-manager`.
+A single [Pi](https://github.com/earendil-works/pi-mono) package containing six local-development extensions: `claude-skill`, `loop`, `messaging`, `task`, `work`, and `worktree-manager`. (`theme-sync` was removed in v0.5.0: Pi 1.0's built-in `system` theme follows the terminal's light and dark appearance.)
 
 ## Security
 
@@ -49,10 +49,6 @@ Messaging requires NATS Server 2.14.6 in `PATH` (or `NATS_SERVER`) and uses a sa
 ```
 
 Automatic cleanup removes only clean Pi-managed worktrees and preserves their branches. Dirty worktrees are retained.
-
-### theme-sync
-
-`theme-sync` follows `light` or `dark` appearance stored in `${XDG_STATE_HOME:-~/.local/state}/theme`, falling back to `LC_TERMINAL_THEME` and then dark. It switches only Pi's built-in `light` and `dark` themes, fences watcher startup, and removes watchers on reload or shutdown.
 
 ### work
 
@@ -115,13 +111,13 @@ Jira and GitHub are read on demand only, and cached for 10 minutes. Jira writes 
 Install the immutable signed release over SSH:
 
 ```bash
-pi install git:git@github.com:dvdkrv/pi-tools.git@v0.1.1
+pi install git:git@github.com:dvdkrv/pi-tools.git@v0.5.0
 ```
 
 Try it for one process without changing persistent package settings:
 
 ```bash
-pi -e git:git@github.com:dvdkrv/pi-tools.git@v0.1.1
+pi -e git:git@github.com:dvdkrv/pi-tools.git@v0.5.0
 ```
 
 The separate Superpowers package is intentionally not bundled. Install its independently pinned release if desired.
@@ -145,7 +141,6 @@ The model sees identity and route metadata only through the static `peer_message
 - `~/.pi/agent/worktree-manager.json`: `repoSearchRoots` used by task and worktree-manager.
 - `~/.pi/agent/task.json`: optional `model` override for `/task` inference.
 - `~/.pi/agent/messaging/`: private local broker configuration and retained data.
-- `${XDG_STATE_HOME:-~/.local/state}/theme`: terminal appearance state for theme-sync.
 
 ## Development
 

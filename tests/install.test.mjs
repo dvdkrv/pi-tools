@@ -12,7 +12,6 @@ const extensions = [
   'loop.ts',
   'messaging.ts',
   'task.ts',
-  'theme-sync.ts',
   'worktree-manager.ts',
 ];
 

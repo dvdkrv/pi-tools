@@ -8,7 +8,6 @@ const extensions = [
   './extensions/loop.ts',
   './extensions/messaging.ts',
   './extensions/task.ts',
-  './extensions/theme-sync.ts',
   './extensions/work.ts',
   './extensions/worktree-manager.ts',
 ];
@@ -42,15 +41,15 @@ test('package resources exist', () => {
 
 test('public documentation covers installation and safety boundaries', () => {
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
-  for (const name of ['claude-skill', 'loop', 'messaging', 'task', 'theme-sync', 'worktree-manager']) {
+  for (const name of ['claude-skill', 'loop', 'messaging', 'task', 'work', 'worktree-manager']) {
     assert.match(readme, new RegExp(name));
   }
   assert.match(readme, /full system access/i);
   assert.match(readme, /NATS Server 2\.14\.6/);
   assert.match(readme, /loopback/i);
   assert.match(readme, /human-controlled/i);
-  assert.match(readme, /pi install git:git@github\.com:dvdkrv\/pi-tools\.git@v0\.1\.1/);
-  assert.match(readme, /pi -e git:git@github\.com:dvdkrv\/pi-tools\.git@v0\.1\.1/);
+  assert.match(readme, /pi install git:git@github\.com:dvdkrv\/pi-tools\.git@v0\.5\.0/);
+  assert.match(readme, /pi -e git:git@github\.com:dvdkrv\/pi-tools\.git@v0\.5\.0/);
 });
 
 test('root scripts include the production install matrix', () => {
