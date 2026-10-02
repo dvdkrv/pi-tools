@@ -136,7 +136,8 @@ export function askUserComponent(
 				return;
 			}
 			const name = parseKey(data);
-			if (!name) return;
+			// The shared keymap closes on q; a question closes only on Esc or Ctrl+C, so it is never dismissed by a stray key.
+			if (!name || name === "q") return;
 			const step = keyStep(keys, name, { actions: [] });
 			keys = step.state;
 			const { action } = step;

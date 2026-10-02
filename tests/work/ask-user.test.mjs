@@ -100,6 +100,21 @@ test('Esc dismisses', () => {
   assert.deepEqual(h.answers, [{ kind: 'dismissed' }]);
 });
 
+test('q does not dismiss; only Esc and Ctrl+C do', () => {
+  const h = harness(base);
+  h.press('q');
+  assert.deepEqual(h.answers, []);
+  assert.match(selectedLine(h), /1\. Ship now/);
+  h.press('j', '\r');
+  assert.deepEqual(h.answers, [{ kind: 'option', index: 1, label: 'Wait' }]);
+});
+
+test('in text entry every printable key is typed, including q, j, k, g, and G', () => {
+  const h = harness(base);
+  h.press('G', '\r', ...'quick jog G', '\r');
+  assert.deepEqual(h.answers, [{ kind: 'other', text: 'quick jog G' }]);
+});
+
 test('Ctrl+C dismisses from the options and from text entry', () => {
   const options = harness(base);
   options.press('\x03');
