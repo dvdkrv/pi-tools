@@ -35,6 +35,7 @@ import { popupArgs, tmuxRunner } from "../src/work/tmux.ts";
 import { openCandidates } from "../src/work/triage.ts";
 import type { TriageUiContext } from "../src/work/triage-ui.ts";
 import { runTriageUi } from "../src/work/triage-ui.ts";
+import type { ChildRun } from "../src/work/types.ts";
 import { DECLARED_STATUSES, JOB_KINDS } from "../src/work/types.ts";
 import { recordUsage } from "../src/work/usage.ts";
 
@@ -179,8 +180,28 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 				return true;
 			}
 		};
-		const notifyLead = (text: string): void => {
-			pi.sendMessage({ customType: CHILD_MESSAGE, content: text, display: true }, { deliverAs: "followUp", triggerTurn: leadIdle() });
+		// Results a busy lead got without a turn; at settle, the ones still unhandled get one combined turn,
+		// since the request that would have read them may have been the lead's last.
+		const unreadResults = new Set<string>();
+		const notifyLead = (text: string, runId?: string): void => {
+			const idle = leadIdle();
+			if (!idle && runId) unreadResults.add(runId);
+			pi.sendMessage({ customType: CHILD_MESSAGE, content: text, display: true }, { deliverAs: "followUp", triggerTurn: idle });
+		};
+		const remindLead = (): void => {
+			if (!supervisor || unreadResults.size === 0) return;
+			const ids = [...unreadResults];
+			unreadResults.clear();
+			let pending: ChildRun[] = [];
+			try {
+				pending = supervisor.unhandled(ids);
+			} catch {
+				// Without the registry the results already in context must do.
+			}
+			if (pending.length === 0) return;
+			const list = pending.map((run) => `${run.id} ${run.outcome}`).join(", ");
+			const text = `Child results that arrived while you were busy and are not handled yet: ${list}. Act on them or tell the user.`;
+			pi.sendMessage({ customType: CHILD_MESSAGE, content: text, display: true }, { deliverAs: "followUp", triggerTurn: true });
 		};
 		const supervisor = childRunId
 			? undefined
@@ -394,6 +415,7 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			guard?.agentEnd();
 		});
 		pi.on("agent_settled", async (_event, ctx) => {
+			remindLead();
 			const session = tracker.settled();
 			// Only a terminal session notifies: its stdout is the user's terminal, and it is always top-level.
 			if (!session || ctx.mode !== "tui" || childRunId) return;

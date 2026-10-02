@@ -133,3 +133,38 @@ test('a child result triggers a turn only when the lead is idle; a busy lead get
   assert.match(s.sent[1].message.content, /^Child C-2 finished: done/);
   assert.deepEqual(s.sent[1].options, { deliverAs: 'followUp', triggerTurn: true });
 });
+
+// A busy lead's result waits for its next request; if that request never comes, settle asks once.
+async function busyLead(behavior) {
+  const rt = await memoryRuntime();
+  const idle = { value: false };
+  const s = setup({
+    runtime: rt, idle,
+    supervisor: { command: [process.execPath, FAKE], env: { PATH: process.env.PATH, FAKE_CHILD: JSON.stringify({ sessionId: 'child-s1', ...behavior }), FAKE_CHILD_LOG: join(tempDir(), 'child.jsonl') }, killGraceMs: 200 },
+  });
+  await s.emit('session_start', { reason: 'startup' });
+  await s.run('delegate', { goal: 'Map the auth flow', kind: 'read-only' });
+  await until(() => s.sent.length === 1);
+  assert.deepEqual(s.sent[0].options, { deliverAs: 'followUp', triggerTurn: false });
+  idle.value = true;
+  return { rt, s };
+}
+
+test('a result a busy lead has not handled by settle triggers exactly one combined turn', async () => {
+  const { s } = await busyLead({ onPrompt: 'exit' });
+  assert.match(s.sent[0].message.content, /^Child C-1 finished: failed/);
+  await s.emit('agent_settled');
+  assert.equal(s.sent.length, 2);
+  assert.equal(s.sent[1].message.customType, 'work-child');
+  assert.equal(s.sent[1].message.content, 'Child results that arrived while you were busy and are not handled yet: C-1 failed. Act on them or tell the user.');
+  assert.deepEqual(s.sent[1].options, { deliverAs: 'followUp', triggerTurn: true });
+  await s.emit('agent_settled');
+  assert.equal(s.sent.length, 2);
+});
+
+test('a result a busy lead handled before settle triggers no turn', async () => {
+  const { s } = await busyLead({ onPrompt: 'exit' });
+  assert.equal((await s.run('stop_child', { id: 'C-1', discard: true })).content[0].text, 'Discarded C-1.');
+  await s.emit('agent_settled');
+  assert.equal(s.sent.length, 1);
+});

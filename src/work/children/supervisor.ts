@@ -28,7 +28,8 @@ export const ABORT_TIMEOUT_MS = 5_000;
 export type SupervisorDeps = {
 	store: () => WorkStore;
 	config: () => ChildrenConfig;
-	notify: (text: string) => void;
+	// runId is set for a run's result message, so the lead can tell later whether it was handled.
+	notify: (text: string, runId?: string) => void;
 	command?: readonly string[];
 	env?: NodeJS.ProcessEnv;
 	git?: GitRunner;
@@ -44,6 +45,7 @@ export type Supervisor = {
 	steer(leadSession: string, id: string, text: string, urgent: boolean): Promise<string>;
 	stop(leadSession: string, id: string, discard: boolean): Promise<string>;
 	recover(leadSession: string): ChildRun[];
+	unhandled(ids: Iterable<string>): ChildRun[];
 	shutdownAll(): Promise<void>;
 };
 
@@ -229,7 +231,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 				}
 				run = store.endChildRun(id, end, actorOf(run));
 			}
-			if (!handle.stopping && !alreadyHandled(run)) deps.notify(renderResult(run, deps.config()));
+			if (!handle.stopping && !alreadyHandled(run)) deps.notify(renderResult(run, deps.config()), id);
 		} catch (error) {
 			if (!handle.stopping) deps.notify(`Child ${id} ended, but recording its result failed: ${errorMessage(error)}`);
 		} finally {
@@ -396,5 +398,11 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 		await Promise.all(all.map((handle) => handle.child.shutdown(grace)));
 	}
 
-	return { delegate, list, steer, stop, recover, shutdownAll };
+	// The runs among ids whose result still needs the lead: not merged, discarded, or stopped by the lead.
+	function unhandled(ids: Iterable<string>): ChildRun[] {
+		const store = deps.store();
+		return [...ids].map((id) => store.getChildRun(id)).filter((run): run is ChildRun => run !== undefined && !alreadyHandled(run));
+	}
+
+	return { delegate, list, steer, stop, recover, unhandled, shutdownAll };
 }
