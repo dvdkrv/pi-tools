@@ -185,6 +185,13 @@ test('a priced gateway model with zero reported cost sends no pricing notice', a
   assert.match(l.messages[0], /^Child C-1 finished/);
 });
 
+test('delegate refuses a model outside children.allowedModels', async () => {
+  const l = await lead();
+  const result = l.supervisor.delegate('lead-1', l.repo, implement({ model: 'anthropic/claude-opus-5', model_reason: 'test' }));
+  assert.equal(result.ok, false);
+  assert.equal(result.message, 'Refused: model anthropic/claude-opus-5 is not allowed (children.allowedModels: ai-gw-*); use ai-gw-anthropic-200k/anthropic/claude-opus-5.');
+});
+
 test('a child that cannot start fails the run and removes its worktree and branch', async () => {
   const l = await lead({ command: ['/nonexistent/pi'] });
   const { run } = l.supervisor.delegate('lead-1', l.repo, implement());

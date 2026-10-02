@@ -2,6 +2,7 @@ import type { ChildrenConfig } from "../config.ts";
 import { repoChildrenConfig } from "../config.ts";
 import type { Brief, ChildKind } from "../types.ts";
 import { expensiveVerdict, restrictedVerdict } from "./guards.ts";
+import { matchesModel } from "./pricing.ts";
 
 export const GOAL_MAX = 200;
 export const CONTEXT_MAX = 4000;
@@ -22,6 +23,22 @@ export type BriefParams = {
 export type ResolvedBrief = { brief: Brief; model: string; budgetLines: number | null; budgetFiles: number | null; notes: string[] };
 
 const clean = (list: string[] | undefined): string[] => (list ?? []).map((entry) => entry.trim()).filter(Boolean);
+
+// The same model served through the AI gateway, when it is obvious from the model id.
+function gatewayAlternative(model: string): string | null {
+	if (model.startsWith("anthropic/")) return `ai-gw-anthropic-200k/${model}`;
+	if (model.startsWith("claude-")) return `ai-gw-anthropic-200k/anthropic/${model}`;
+	if (model.startsWith("openai/")) return `ai-gw-openai/${model}`;
+	if (model.startsWith("gpt-")) return `ai-gw-openai/openai/${model}`;
+	return null;
+}
+
+function modelVerdict(model: string, isDefault: boolean, allowed: string[]): string | null {
+	if (matchesModel(allowed, model)) return null;
+	const alternative = gatewayAlternative(model);
+	const suggestion = alternative && matchesModel(allowed, alternative) ? `; use ${alternative}` : "";
+	return `model ${model}${isDefault ? " (children.defaultModel)" : ""} is not allowed (children.allowedModels: ${allowed.join(", ")})${suggestion}`;
+}
 const positiveInteger = (value: number): boolean => Number.isInteger(value) && value > 0;
 
 export function leadShortId(sessionId: string): string {
@@ -47,6 +64,8 @@ export function resolveBrief(params: BriefParams, config: ChildrenConfig, repo: 
 	const model = params.model?.trim() || null;
 	const modelReason = params.model_reason?.trim() || null;
 	if (model && !modelReason) return { error: "model needs model_reason" };
+	const modelError = modelVerdict(model ?? config.defaultModel, model === null, config.allowedModels);
+	if (modelError) return { error: modelError };
 	const from = params.from?.trim() || null;
 	if (from && !implement) return { error: "from applies only to implement runs" };
 	const notes: string[] = [];

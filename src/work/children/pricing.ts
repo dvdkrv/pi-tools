@@ -9,11 +9,16 @@ function globPattern(glob: string): RegExp {
 	return new RegExp(`^${escaped}$`);
 }
 
+// `*` matches any characters; other characters match literally.
+export function matchesModel(patterns: string[], model: string): boolean {
+	return patterns.some((pattern) => (pattern.includes("*") ? globPattern(pattern).test(model) : pattern === model));
+}
+
 export function priceFor(pricing: ChildrenConfig["pricing"], model: string): ModelPrice | undefined {
 	const exact = pricing[model];
 	if (exact) return exact;
 	for (const [pattern, price] of Object.entries(pricing)) {
-		if (pattern.includes("*") && globPattern(pattern).test(model)) return price;
+		if (pattern.includes("*") && matchesModel([pattern], model)) return price;
 	}
 	return undefined;
 }
