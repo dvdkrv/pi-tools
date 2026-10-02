@@ -5,6 +5,8 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { AskUserAnswer } from "../src/work/ask-user.ts";
+import { ASK_USER_DESCRIPTION, ASK_USER_NO_UI, AskUserParams, answerText, askUserComponent, askUserNote, askUserProblem } from "../src/work/ask-user.ts";
 import { captureItem } from "../src/work/capture.ts";
 import type { ChildGuard } from "../src/work/children/child-guard.ts";
 import { CHILD_RUN_ENV, createChildGuard, failClosedGuard, PARENT_PID_ENV } from "../src/work/children/child-guard.ts";
@@ -35,7 +37,7 @@ import { popupArgs, tmuxRunner } from "../src/work/tmux.ts";
 import { openCandidates } from "../src/work/triage.ts";
 import type { TriageUiContext } from "../src/work/triage-ui.ts";
 import { runTriageUi } from "../src/work/triage-ui.ts";
-import type { ChildRun } from "../src/work/types.ts";
+import type { ChildRun, Session } from "../src/work/types.ts";
 import { DECLARED_STATUSES, JOB_KINDS } from "../src/work/types.ts";
 import { recordUsage } from "../src/work/usage.ts";
 
@@ -62,6 +64,7 @@ export const SESSION_STATUS_DESCRIPTION = "Write your complete reply to the user
 export const JOB_REGISTER_DESCRIPTION = "Register a background job you started, such as a cron entry or a long-running process, so the user can see its health on the work dashboard. Give a check_command that exits 0 when the job is healthy, and a stop_command when stopping needs more than SIGTERM to pid. Registering the same name again updates the job.";
 
 const TOOL_SEARCH = "tool_search";
+const ASK_USER = "ask_user";
 // session_status stays direct: every turn ends with it.
 export const DEFERRED_TOOLS: readonly string[] = ["work_propose", "job_register", ...LEAD_TOOLS];
 
@@ -307,6 +310,54 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			},
 		});
 
+		// Desktop notification for a needs-me session; only a terminal session notifies, since its stdout is the user's terminal.
+		const notifySession = (ctx: ExtensionContext, session: Session | undefined): void => {
+			if (!session || ctx.mode !== "tui" || childRunId) return;
+			let enabled = true;
+			try {
+				enabled = rt().config.notifications !== false;
+			} catch {
+				// A registry failure leaves notifications at their default.
+			}
+			if (!enabled) return;
+			notifyNeedsMe({
+				session,
+				repo: repoOf(ctx.cwd),
+				env,
+				tmux: sessionTmux,
+				write: options.write ?? ((value) => { process.stdout.write(value); }),
+			});
+		};
+
+		// ask_user: never in child runs (they have no user), and active only in terminal sessions (see session_start).
+		if (!childRunId) {
+			pi.registerTool({
+				name: ASK_USER,
+				label: "Ask User",
+				exposure: "model-only",
+				executionMode: "sequential",
+				description: ASK_USER_DESCRIPTION,
+				parameters: AskUserParams,
+				async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+					const reply = (text: string, answer: AskUserAnswer | null) => ({ content: [{ type: "text" as const, text }], details: { answer } });
+					if (ctx.mode !== "tui" || !ctx.hasUI) return reply(ASK_USER_NO_UI, null);
+					const problem = askUserProblem(params);
+					if (problem) return reply(problem, null);
+					notifySession(ctx, tracker.asking(askUserNote(params)));
+					try {
+						const answer = await ctx.ui.custom<AskUserAnswer>((tui, theme, _keybindings, done) => {
+							// An aborted run (Ctrl+C, a lead shutting down) closes the dialog as dismissed.
+							signal?.addEventListener("abort", () => done({ kind: "dismissed" }), { once: true });
+							return askUserComponent(params, tui, theme, done);
+						});
+						return reply(answerText(answer), answer);
+					} finally {
+						tracker.answered();
+					}
+				},
+			});
+		}
+
 		pi.registerTool({
 			name: "job_register",
 			label: "Job Register",
@@ -393,6 +444,7 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			});
 			startChild(ctx);
 			startLead(ctx);
+			if (ctx.mode !== "tui" && pi.getActiveTools().includes(ASK_USER)) pi.setActiveTools(pi.getActiveTools().filter((name) => name !== ASK_USER));
 		});
 		pi.on("input", async (event) => {
 			tracker.input(event.text, event.source);
@@ -416,23 +468,7 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		});
 		pi.on("agent_settled", async (_event, ctx) => {
 			remindLead();
-			const session = tracker.settled();
-			// Only a terminal session notifies: its stdout is the user's terminal, and it is always top-level.
-			if (!session || ctx.mode !== "tui" || childRunId) return;
-			let enabled = true;
-			try {
-				enabled = rt().config.notifications !== false;
-			} catch {
-				// A registry failure leaves notifications at their default.
-			}
-			if (!enabled) return;
-			notifyNeedsMe({
-				session,
-				repo: repoOf(ctx.cwd),
-				env,
-				tmux: sessionTmux,
-				write: options.write ?? ((value) => { process.stdout.write(value); }),
-			});
+			notifySession(ctx, tracker.settled());
 		});
 		pi.on("session_info_changed", async (event) => tracker.rename(event.name ?? null));
 		pi.on("session_shutdown", async (event) => {

@@ -26,6 +26,9 @@ export type SessionTracker = {
 	input(text: string, source: string): void;
 	agentStart(): void;
 	declare(status: DeclaredStatus, note: string): boolean;
+	// A blocking question (ask_user): needs-me while it is open, then back to working.
+	asking(note: string): Session | undefined;
+	answered(): void;
 	agentEnd(messages: readonly unknown[]): void;
 	settled(): Session | undefined;
 	rename(name: string | null): void;
@@ -107,6 +110,20 @@ export function createSessionTracker(deps: TrackerDeps): SessionTracker {
 			});
 			if (recorded) declared = true;
 			return recorded;
+		},
+		asking(note) {
+			let session: Session | undefined;
+			guard((store, sessionId) => {
+				session = store.setSessionStatus(sessionId, "needs-me", note, "agent");
+			});
+			return session;
+		},
+		answered() {
+			// The run continues, so an earlier declaration no longer describes it.
+			declared = false;
+			guard((store, sessionId) => {
+				store.setSessionStatus(sessionId, "working", "", "auto");
+			});
 		},
 		agentEnd(value) {
 			messages = value;
