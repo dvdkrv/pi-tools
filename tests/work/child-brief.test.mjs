@@ -9,8 +9,8 @@ test('an implement brief takes the default model and budget, and caps requested 
   const r = resolveBrief({ goal: ' Add retry to fetchJira ', kind: 'implement', scope: ['src/**', ' '], acceptance: ['node --test tests/a.test.mjs'] }, DEFAULT_CHILDREN, 'api');
   assert.deepEqual(r.brief, { goal: 'Add retry to fetchJira', kind: 'implement', scope: ['src/**'], nonGoals: [], acceptance: ['node --test tests/a.test.mjs'], context: '', model: null, modelReason: null, from: null, repo: null });
   assert.deepEqual([r.model, r.budgetLines, r.budgetFiles, r.notes], ['ai-gw-openai/openai/gpt-5.6-sol', 300, 8, []]);
-  const capped = resolveBrief({ goal: 'x', kind: 'implement', scope: ['src/**'], acceptance: ['true'], budget: { lines: 5000, files: 3 }, model: 'openai/gpt-5.6', model_reason: 'needs a long context' }, DEFAULT_CHILDREN, 'api');
-  assert.deepEqual([capped.budgetLines, capped.budgetFiles, capped.model, capped.notes], [800, 3, 'openai/gpt-5.6', ['Budget capped at 800 lines.']]);
+  const capped = resolveBrief({ goal: 'x', kind: 'implement', scope: ['src/**'], acceptance: ['true'], budget: { lines: 5000, files: 3 }, model: 'ai-gw-openai/openai/gpt-5.5', model_reason: 'needs a long context' }, DEFAULT_CHILDREN, 'api');
+  assert.deepEqual([capped.budgetLines, capped.budgetFiles, capped.model, capped.notes], [800, 3, 'ai-gw-openai/openai/gpt-5.5', ['Budget capped at 800 lines.']]);
   assert.equal(capped.brief.modelReason, 'needs a long context');
 });
 
@@ -36,6 +36,27 @@ test('invalid briefs are refused with a reason', () => {
     [{ goal: 'x', kind: 'read-only', from: 'C-1' }, /from applies only to implement runs/],
   ];
   for (const [params, pattern] of cases) assert.match(resolveBrief(params, DEFAULT_CHILDREN, 'api').error, pattern);
+});
+
+test('a model outside children.allowedModels is refused, with the gateway alternative when there is one', () => {
+  const base = { goal: 'x', kind: 'implement', scope: ['src/**'], acceptance: ['true'], model_reason: 'test' };
+  assert.equal(
+    resolveBrief({ ...base, model: 'anthropic/claude-opus-5' }, DEFAULT_CHILDREN, 'api').error,
+    'model anthropic/claude-opus-5 is not allowed (children.allowedModels: ai-gw-*); use ai-gw-anthropic-200k/anthropic/claude-opus-5',
+  );
+  assert.equal(
+    resolveBrief({ ...base, model: 'gpt-5.6' }, DEFAULT_CHILDREN, 'api').error,
+    'model gpt-5.6 is not allowed (children.allowedModels: ai-gw-*); use ai-gw-openai/openai/gpt-5.6',
+  );
+  assert.equal(resolveBrief({ ...base, model: 'local/llama' }, DEFAULT_CHILDREN, 'api').error, 'model local/llama is not allowed (children.allowedModels: ai-gw-*)');
+  const refusedDefault = { ...DEFAULT_CHILDREN, defaultModel: 'openai/gpt-5.6' };
+  assert.equal(
+    resolveBrief({ goal: 'x', kind: 'read-only' }, refusedDefault, null).error,
+    'model openai/gpt-5.6 (children.defaultModel) is not allowed (children.allowedModels: ai-gw-*); use ai-gw-openai/openai/gpt-5.6',
+  );
+  const open = { ...DEFAULT_CHILDREN, allowedModels: ['openai/*'] };
+  assert.equal(resolveBrief({ ...base, model: 'openai/gpt-5.6' }, open, 'api').error, undefined);
+  assert.equal(resolveBrief({ ...base, model: 'anthropic/claude-opus-5' }, open, 'api').error, 'model anthropic/claude-opus-5 is not allowed (children.allowedModels: openai/*)');
 });
 
 test('per-repository expensive commands also apply to acceptance', () => {

@@ -12,6 +12,7 @@ test('without a children section, the defaults apply and nothing warns', () => {
   assert.equal(config.children, undefined);
   assert.deepEqual(childrenConfig(config), {
     defaultModel: 'ai-gw-openai/openai/gpt-5.6-sol',
+    allowedModels: ['ai-gw-*'],
     diffBudget: { defaultLines: 300, defaultFiles: 8, maxLines: 800, prLines: 2000 },
     spendCapUsd: 5,
     commandTimeoutMinutes: 10,
@@ -30,6 +31,7 @@ test('without a children section, the defaults apply and nothing warns', () => {
 test('valid children settings override the defaults', () => {
   const { config, warnings } = parse({
     defaultModel: 'openai/gpt-5.6',
+    allowedModels: ['ai-gw-*', 'openai/*'],
     diffBudget: { defaultLines: 200, defaultFiles: 5, maxLines: 600, prLines: 1500 },
     spendCapUsd: 2.5,
     commandTimeoutMinutes: 3,
@@ -40,6 +42,7 @@ test('valid children settings override the defaults', () => {
   assert.deepEqual(warnings, []);
   const c = childrenConfig(config);
   assert.equal(c.defaultModel, 'openai/gpt-5.6');
+  assert.deepEqual(c.allowedModels, ['ai-gw-*', 'openai/*']);
   assert.deepEqual(c.diffBudget, { defaultLines: 200, defaultFiles: 5, maxLines: 600, prLines: 1500 });
   assert.deepEqual([c.spendCapUsd, c.commandTimeoutMinutes, c.warnPercent], [2.5, 3, 75]);
   assert.deepEqual(c.pricing['openai/gpt-5.6'], { input: 3, output: 15 });
@@ -50,6 +53,7 @@ test('valid children settings override the defaults', () => {
 test('invalid values fall back to the defaults field by field, each with a warning', () => {
   const { config, warnings } = parse({
     defaultModel: '',
+    allowedModels: ['ok/*', ' '],
     diffBudget: { defaultLines: -1, defaultFiles: 2.5, maxLines: 'x' },
     spendCapUsd: 0,
     commandTimeoutMinutes: 5,
@@ -59,6 +63,7 @@ test('invalid values fall back to the defaults field by field, each with a warni
   });
   const c = childrenConfig(config);
   assert.equal(c.defaultModel, 'ai-gw-openai/openai/gpt-5.6-sol');
+  assert.deepEqual(c.allowedModels, ['ai-gw-*']);
   assert.deepEqual(c.diffBudget, { defaultLines: 300, defaultFiles: 8, maxLines: 800, prLines: 2000 });
   assert.deepEqual([c.spendCapUsd, c.commandTimeoutMinutes, c.warnPercent], [5, 5, 80]);
   assert.deepEqual(c.pricing.ok, { input: 1, output: 2 });
@@ -68,10 +73,10 @@ test('invalid values fall back to the defaults field by field, each with a warni
   assert.equal(c.pricing.nope, undefined);
   assert.deepEqual(c.repos.api, { ignore: ['ok/**'], expensiveCommands: ['make check$'] });
   assert.deepEqual(c.repos.web, { ignore: [], expensiveCommands: [] });
-  for (const field of ['defaultModel', 'defaultLines', 'defaultFiles', 'maxLines', 'spendCapUsd', 'warnPercent', 'pricing.badCache', 'pricing.bad', 'pricing.nope', 'repos.api.ignore', 'repos.api.expensiveCommands', 'repos.web']) {
+  for (const field of ['defaultModel', 'allowedModels', 'defaultLines', 'defaultFiles', 'maxLines', 'spendCapUsd', 'warnPercent', 'pricing.badCache', 'pricing.bad', 'pricing.nope', 'repos.api.ignore', 'repos.api.expensiveCommands', 'repos.web']) {
     assert.ok(warnings.some((warning) => warning.startsWith('children') && warning.includes(field)), field);
   }
-  assert.equal(warnings.length, 12);
+  assert.equal(warnings.length, 13);
 });
 
 test('a default budget above the maximum is clamped to the maximum', () => {

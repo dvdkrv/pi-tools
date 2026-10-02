@@ -16,6 +16,8 @@ export type RepoChildrenConfig = { ignore: string[]; expensiveCommands: string[]
 export type DiffBudgetConfig = { defaultLines: number; defaultFiles: number; maxLines: number; prLines: number };
 export type ChildrenConfig = {
 	defaultModel: string;
+	// Glob patterns (`*` matches any characters) a delegated model must match.
+	allowedModels: string[];
 	diffBudget: DiffBudgetConfig;
 	spendCapUsd: number;
 	commandTimeoutMinutes: number;
@@ -27,6 +29,7 @@ export type ChildrenConfig = {
 
 export const DEFAULT_CHILDREN: ChildrenConfig = {
 	defaultModel: "ai-gw-openai/openai/gpt-5.6-sol",
+	allowedModels: ["ai-gw-*"],
 	diffBudget: { defaultLines: 300, defaultFiles: 8, maxLines: 800, prLines: 2000 },
 	spendCapUsd: 5,
 	commandTimeoutMinutes: 10,
@@ -194,6 +197,13 @@ export function parseChildren(value: unknown, warnings: string[]): ChildrenConfi
 		if (model) defaultModel = model;
 		else warnings.push(`children.defaultModel must be a model name; using ${d.defaultModel}`);
 	}
+	let allowedModels = d.allowedModels;
+	if (value.allowedModels !== undefined) {
+		const list = Array.isArray(value.allowedModels) ? value.allowedModels.map((entry) => str(entry)) : [];
+		const patterns = list.filter((entry): entry is string => entry !== undefined);
+		if (patterns.length > 0 && patterns.length === list.length) allowedModels = patterns;
+		else warnings.push("children.allowedModels must be a non-empty list of model patterns; using the default");
+	}
 	let warnPercent = positiveNumber(value, "warnPercent", d.warnPercent, "children", warnings, true);
 	if (warnPercent > 100) {
 		warnings.push(`children.warnPercent must be at most 100; using ${d.warnPercent}`);
@@ -227,6 +237,7 @@ export function parseChildren(value: unknown, warnings: string[]): ChildrenConfi
 	}
 	return {
 		defaultModel,
+		allowedModels,
 		diffBudget,
 		spendCapUsd: positiveNumber(value, "spendCapUsd", d.spendCapUsd, "children", warnings, false),
 		commandTimeoutMinutes: positiveNumber(value, "commandTimeoutMinutes", d.commandTimeoutMinutes, "children", warnings, false),
