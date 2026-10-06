@@ -17,8 +17,8 @@ test('backoff delay uses bounded jitter and caps at sixty seconds', () => {
 
 test('only transport-like and transient messaging errors are recoverable', () => {
   assert.equal(isRecoverable(new Error('socket reset')), true);
-  for (const code of ['uncertain', 'unavailable', 'busy']) assert.equal(isRecoverable(new MessagingError(code, code)), true, code);
-  for (const code of ['participation', 'authority', 'corrupt', 'configuration', 'missing', 'full', 'validation']) {
+  for (const code of ['uncertain', 'unavailable', 'contended']) assert.equal(isRecoverable(new MessagingError(code, code)), true, code);
+  for (const code of ['busy', 'participation', 'authority', 'corrupt', 'configuration', 'missing', 'full', 'validation', 'route', 'allowance']) {
     assert.equal(isRecoverable(new MessagingError(code, code)), false, code);
   }
 });

@@ -583,6 +583,16 @@ test('an uncertain send is audited once, never replayed, and keeps its spent cre
   assert.equal(f.backend.peer.credits, credits); assert.equal(Object.keys(f.state.messages).length, 1);
 });
 
+test('a protocol busy rejection is returned to the caller without reconnecting', { timeout: 2000 }, async t => {
+  const f = fixture(t, { retryDelay: () => 0 }); p.arm(f.state, f.group, 5);
+  await f.commands.get('messages').handler('join review', f.ctx);
+  await execute(f, 'send', { kind: 'notice', toPeerId: f.other.id, text: 'first' });
+  await assert.rejects(execute(f, 'send', { kind: 'notice', toPeerId: f.other.id, text: 'second' }), error => error.code === 'busy');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(f.connectCalls.length, 1); assert.equal(f.lifecycle.reattaches.length, 0);
+  assert.equal(f.statuses.some(([, text]) => /reconnecting/.test(text ?? '')), false);
+});
+
 test('consecutive failed factories receive increasing retry attempts', { timeout: 2000 }, async t => {
   const attempts = []; const f = fixture(t, { heartbeatMs: 5, retryDelay: attempt => { attempts.push(attempt); return 1; } });
   await f.commands.get('messages').handler('join review', f.ctx); f.setFactoryError(new Error('broker offline')); f.failHeartbeat(new Error('connection lost'));

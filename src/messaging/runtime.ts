@@ -117,6 +117,8 @@ export class MessagingRuntime {
     } catch (error) { if (generation === this.generation) this.fail(error); return false; }
     finally { this.receiving = false; }
   }
+  /** Stop without touching the backend: used when its connection already failed and recovery takes over. */
+  abandon(): void { this.deactivate(); }
   private deactivate(): void {
     this.stopped = true; this.generation++; this.requested = false;
     if (this.timer) clearTimeout(this.timer);

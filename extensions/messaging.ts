@@ -115,7 +115,7 @@ export function registerMessaging(
     const sessionId = state.ctx.sessionManager.getSessionId(); const own = (await raw.peers(state.ref)).filter(peer => peer.active && peer.sessionId === sessionId);
     const candidate = own.find(peer => ['suspended', 'stale'].includes(peerPresence(peer)));
     if (candidate) await raw.resume(state.ref, candidate.id, sessionId);
-    else if (own.some(peer => peerPresence(peer) === 'online')) throw new MessagingError('busy', 'Existing automatic participation is still online');
+    else if (own.some(peer => peerPresence(peer) === 'online')) throw new MessagingError('contended', 'Existing automatic participation is still online');
     else await raw.join(state.ref, { sessionId, displayName: displayName(sessionId, state.ctx.cwd) });
   }
   async function attemptRecovery(state: Recovery): Promise<void> {
@@ -147,12 +147,12 @@ export function registerMessaging(
     const lease = backendRaw.lease;
     if (!lease) { ctx.ui.setStatus('pi-messaging', 'messages: stopped'); ctx.ui.notify('Messaging recovery cannot preserve this participation; rejoin explicitly with /messages join.', 'warning'); return; }
     const old = backendRaw; const state: Recovery = { ctx, ref: joined, lease, automatic: autoJoined, epoch, attempt: 0 };
-    recovery = state; runtime = undefined; backend = undefined; backendRaw = undefined; ctx.ui.setStatus('pi-messaging', 'messages: reconnecting');
+    recovery = state; runtime?.abandon(); runtime = undefined; backend = undefined; backendRaw = undefined; ctx.ui.setStatus('pi-messaging', 'messages: reconnecting');
     void old.close().catch(() => {}).then(() => attemptRecovery(state));
   }
   function startRuntime(raw: MessagingBackend, ref: GroupRef, ctx: ExtensionContext, automatic = false): void {
     selected = joined = ref; autoJoined = automatic; runtimeCtx = ctx; lastPrune = 0; lastRevoke = 0;
-    runtime = new MessagingRuntime(raw, ref, {
+    const current: MessagingRuntime = runtime = new MessagingRuntime(raw, ref, {
       ready: () => ctx.isIdle() && !paused(), tick: () => tick(raw, ref, ctx.cwd),
       deliver: (message, sendOptions) => pi.sendMessage(message, sendOptions),
       status: summary => {
@@ -163,6 +163,7 @@ export function registerMessaging(
           : `messages ${summary.group.label}: ${summary.mode}, ${summary.remaining} left, ${summary.queuedCount} queued, ${summary.attemptedCount} attempted, ${summary.awaitingReplyCount} awaiting reply`);
       },
       error: (message, cause) => {
+        if (runtime !== current) return;
         if (isRecoverable(cause)) startRecovery(ctx, cause);
         else { ctx.ui.setStatus('pi-messaging', 'messages: stopped — inspect inbox'); ctx.ui.notify(message, 'warning'); }
       },

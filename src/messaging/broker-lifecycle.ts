@@ -220,7 +220,7 @@ export async function ensureBroker(options: EnsureBrokerOptions = {}): Promise<{
           continue;
         }
       }
-      if (Date.now() >= deadline) fail('busy', 'Messaging broker startup is already in progress');
+      if (Date.now() >= deadline) fail('contended', 'Messaging broker startup is already in progress');
       await delay(50);
     }
   }
