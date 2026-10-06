@@ -17,6 +17,7 @@ export function messageStateLabel(state: string): string {
 		case "queued": return "queued";
 		case "attempted": return "delivering";
 		case "observed": return "delivered";
+		case "uncertain": return "uncertain (not resent)";
 		case "terminal-unresolved": return "unconfirmed";
 		default: return state;
 	}

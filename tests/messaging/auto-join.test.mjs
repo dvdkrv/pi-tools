@@ -7,22 +7,24 @@ const { registerMessaging } = await jiti.import('../../extensions/messaging.ts')
 const { connectBackend } = await jiti.import('../../src/messaging/nats-backend.ts');
 const { brokerFixture } = await import('./helpers/broker.mjs');
 const p = await jiti.import('../../src/messaging/policy.ts');
+const { MessagingError } = await jiti.import('../../src/messaging/contracts.ts');
 
-function fixture(t, { env = {}, mode = 'tui', saved = true, autoJoin = true, heartbeatMs = 5, ensureHook = async () => {} } = {}) {
+function fixture(t, { env = {}, mode = 'tui', saved = true, autoJoin = true, heartbeatMs = 5, retryDelay, ensureHook = async () => {} } = {}) {
   const state = p.newLedger(randomUUID()); const events = new Map(); const tools = new Map(); const commands = new Map();
   const notices = []; const statuses = []; const deliveries = []; const sentOptions = []; const maintainOptions = []; const audit = { records: [], states: [], prunes: [], open: [] };
   const bodies = new Map(); const registryNames = new Map([['session-one', 'Registry Name']]); const registryState = new Map();
   let settings = { autoJoin, sendsPerHour: 7, paused: false, retentionDays: 30, routeCooldownMinutes: 3 };
-  let sessionId = 'session-one'; let peer; let lease; let closed = false; let ensureCalls = 0; let factoryCalls = 0; let reserveCalls = 0;
+  let sessionId = 'session-one'; let peer; let lease; let closed = false; let ensureCalls = 0; let factoryCalls = 0; let reserveCalls = 0; let resumeCalls = 0; let reattachCalls = 0; let heartbeatError; let reattachError;
   const install = stored => { lease = p.leaseOf(stored); peer = p.publicPeer(stored); return peer; };
   const backend = {
-    get peer() { return peer; }, get closed() { return closed; },
+    get peer() { return peer; }, get lease() { return lease; }, get closed() { return closed; },
     listGroups: async () => Object.values(state.groups).map(p.refOf), createGroup: async (label, options) => p.createGroup(state, label, options),
     getGroupSummary: async ref => p.summary(state, ref), peers: async ref => Object.values(state.peers).filter(x => x.groupId === ref.id).map(p.publicPeer),
     routes: async ref => Object.values(state.routes).filter(x => x.groupId === ref.id), setRoute: async (ref, from, to, value, recover) => p.setRoute(state, ref, from, to, value, recover),
-    join: async (ref, info) => install(p.joinPeer(state, ref, info)), resume: async (ref, id, sessionId) => install(p.resumePeer(state, ref, sessionId, id)), takeover: async () => { throw Error('unexpected takeover'); },
+    join: async (ref, info) => install(p.joinPeer(state, ref, info)), resume: async (ref, id, sessionId) => { resumeCalls++; return install(p.resumePeer(state, ref, sessionId, id)); }, takeover: async () => { throw Error('unexpected takeover'); },
+    reattach: async (ref, current) => { reattachCalls++; if (reattachError) throw reattachError; return install(p.requireLease(state, current, ref)); },
     suspend: async () => { if (lease) p.suspendPeer(state, lease); peer = lease = undefined; }, leave: async () => { if (lease) p.leavePeer(state, lease); peer = lease = undefined; },
-    close: async () => { closed = true; }, heartbeat: async name => { if (lease) { p.heartbeat(state, lease, name); peer = p.publicPeer(p.requireLease(state, lease)); } },
+    close: async () => { closed = true; }, heartbeat: async name => { if (heartbeatError) { const error = heartbeatError; heartbeatError = undefined; throw error; } if (lease) { p.heartbeat(state, lease, name); peer = p.publicPeer(p.requireLease(state, lease)); } },
     arm: async (ref, limit) => p.arm(state, ref, limit), pause: async ref => p.pause(state, ref),
     maintain: async (ref, now, options) => { maintainOptions.push(options); p.maintain(state, now, options); }, onChange: () => () => {},
     reserve: async () => { reserveCalls++; if (!lease) return []; const ids = Object.values(state.messages).filter(x => x.recipientPeerId === peer.id && x.state === 'queued').map(x => x.id); return p.admitBatch(state, lease, ids).map(value => ({ ...value, envelope: p.envelope(state, state.messages[value.message.id], bodies.get(value.message.id) ?? '') })); },
@@ -36,7 +38,7 @@ function fixture(t, { env = {}, mode = 'tui', saved = true, autoJoin = true, hea
     sessionManager: { getSessionFile: () => saved ? '/tmp/session.jsonl' : undefined, getSessionId: () => sessionId },
     ui: { notify: (...args) => notices.push(args), setStatus: (...args) => statuses.push(args), select: async (_title, choices) => choices[0], confirm: async () => true, input: async () => '', editor: async () => 'body' } };
   registerMessaging(pi, async () => { factoryCalls++; closed = false; return backend; }, async () => { ensureCalls++; await ensureHook(); }, {
-    env, heartbeatMs, settings: () => settings,
+    env, heartbeatMs, retryDelay, settings: () => settings,
     registry: { displayName: id => registryNames.get(id), liveness: id => registryState.get(id) ?? 'live' },
     audit: { record: entry => audit.records.push(entry), openIds: () => audit.open, setStates: updates => audit.states.push(updates), prune: before => audit.prunes.push(before) },
   });
@@ -44,7 +46,8 @@ function fixture(t, { env = {}, mode = 'tui', saved = true, autoJoin = true, hea
   return { state, backend, events, tools, commands, notices, statuses, deliveries, sentOptions, maintainOptions, audit, ctx,
     setSettings: value => { settings = { ...settings, ...value }; }, setSessionId: value => { sessionId = value; },
     setRegistryName: (id, value) => registryNames.set(id, value), setLiveness: (id, value) => registryState.set(id, value),
-    setBody: (id, value) => bodies.set(id, value), counts: () => ({ ensureCalls, factoryCalls, reserveCalls }) };
+    setBody: (id, value) => bodies.set(id, value), failHeartbeat: error => { heartbeatError = error; }, failReattach: error => { reattachError = error; },
+    counts: () => ({ ensureCalls, factoryCalls, reserveCalls, resumeCalls, reattachCalls }) };
 }
 function value(result) { return JSON.parse(result.content[0].text); }
 async function waitFor(predicate, message, timeout = 1000) {
@@ -98,6 +101,16 @@ test('a stale startup failure cannot detach its replacement session', async t =>
   assert.equal(f.backend.peer.id, replacementId);
   assert.equal(f.backend.peer.sessionId, 'session-two');
   assert.equal(f.notices.length, 0);
+});
+
+test('automatic recovery resumes its own suspended peer when the old lease rotated', { timeout: 2000 }, async t => {
+  const f = fixture(t, { retryDelay: () => 0 }); await f.events.get('session_start')({ reason: 'startup' }, f.ctx);
+  const id = f.backend.peer.id; p.suspendPeer(f.state, f.backend.lease);
+  f.failReattach(new MessagingError('participation', 'lease rotated'));
+  f.failHeartbeat(new Error('broker timeout'));
+  await waitFor(() => f.counts().resumeCalls === 1 && f.counts().factoryCalls === 2, 'automatic participation did not resume after lease rotation');
+  assert.equal(f.backend.peer.id, id); assert.equal(f.backend.peer.suspended, false); assert.equal(f.counts().reattachCalls, 1);
+  assert.equal(f.notices.some(([, level]) => level === 'warning'), false);
 });
 
 test('reload suspends and the same session resumes the same auto-joined peer', async t => {

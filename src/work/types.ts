@@ -119,7 +119,7 @@ export type MessageLogEntry = {
 	stateAt: string;
 	body: string;
 };
-export const OPEN_MESSAGE_STATES = ["queued", "attempted"] as const;
+export const OPEN_MESSAGE_STATES = ["queued", "attempted", "uncertain"] as const;
 
 export type ConnectorRun = {
 	connector: string;

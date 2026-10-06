@@ -5,6 +5,7 @@ import { createJiti } from 'jiti';
 const jiti = createJiti(import.meta.url);
 const { registerMessaging } = await jiti.import('../../extensions/messaging.ts');
 const p = await jiti.import('../../src/messaging/policy.ts');
+const { MessagingError } = await jiti.import('../../src/messaging/contracts.ts');
 const { QUIET_GUIDANCE } = await jiti.import('../../src/messaging/identity.ts');
 import { randomUUID } from 'node:crypto';
 import { CombinedAutocompleteProvider } from '@earendil-works/pi-tui';
@@ -16,18 +17,18 @@ const sdkRequire = createRequire(sdkEntry); const corePackage = '@earendil-works
 const { Agent } = await import(new URL(sdkRequire(corePackage).main, pathToFileURL(sdkRequire.resolve(corePackage))).href);
 const { wrapToolDefinition } = await import(new URL('./core/tools/tool-definition-wrapper.js', sdkEntry).href);
 
-function fixture(t) {
+function fixture(t, { heartbeatMs, retryDelay } = {}) {
   const state = p.newLedger(randomUUID()); const group = p.createGroup(state, 'review');
   const other = p.joinPeer(state, group, { sessionId: 'other', displayName: 'Other' });
   const events = new Map(); const commands = new Map(); const tools = new Map(); const renderers = new Map();
   const bodies = new Map(); const activeTools = ['peer_message'];
-  const delivered = []; const notices = []; const statuses = []; const confirmations = [];
-  const ensureCalls = []; const connectCalls = []; const lifecycle = { joins: 0, resumes: 0, takeovers: 0, suspends: 0, leaves: 0, closes: 0, bodyReads: 0 }; let callSequence = 0; let ensureError;
-  let peer; let lease; let closed = false;
+  const delivered = []; const notices = []; const statuses = []; const confirmations = []; const audit = [];
+  const ensureCalls = []; const connectCalls = []; const lifecycle = { joins: 0, resumes: 0, reattaches: [], takeovers: 0, suspends: 0, leaves: 0, closes: 0, bodyReads: 0 }; let callSequence = 0; let ensureError; let factoryError; let heartbeatError; let reattachError;
+  let peer; let lease; let closed = false; let idle = true;
   const install = stored => { lease = p.leaseOf(stored); peer = p.publicPeer(stored); return { ...peer }; };
   const clear = () => { peer = undefined; lease = undefined; };
   const backend = {
-    get peer() { return peer; }, get closed() { return closed; },
+    get peer() { return peer; }, get lease() { return lease; }, get closed() { return closed; },
     listGroups: async () => Object.values(state.groups).map(p.refOf), createGroup: async label => p.createGroup(state, label),
     getGroupSummary: async g => p.summary(state, g), peers: async g => Object.values(state.peers).filter(x => x.groupId === g.id).map(p.publicPeer),
     routes: async g => Object.values(state.routes).filter(route => route.groupId === g.id).map(route => ({ ...route })),
@@ -35,9 +36,11 @@ function fixture(t) {
     join: async (g, info) => { lifecycle.joins++; return install(p.joinPeer(state, g, info)); },
     resume: async (g, id, sessionId) => { lifecycle.resumes++; return install(p.resumePeer(state, g, sessionId, id)); },
     takeover: async (g, id, sessionId) => { lifecycle.takeovers++; return install(p.takeoverPeer(state, g, sessionId, id)); },
+    reattach: async (g, current) => { lifecycle.reattaches.push(current); if (reattachError) throw reattachError; return install(p.requireLease(state, current, g)); },
     suspend: async () => { lifecycle.suspends++; if (lease) p.suspendPeer(state, lease); clear(); },
     leave: async () => { lifecycle.leaves++; if (lease) p.leavePeer(state, lease); clear(); }, close: async () => { lifecycle.closes++; closed = true; },
-    heartbeat: async name => { if (lease) { p.heartbeat(state, lease, name); peer = p.publicPeer(p.requireLease(state, lease)); } }, onChange: () => () => {}, reserve: async () => [],
+    heartbeat: async name => { if (heartbeatError) { const error = heartbeatError; heartbeatError = undefined; throw error; } if (lease) { p.heartbeat(state, lease, name); peer = p.publicPeer(p.requireLease(state, lease)); } }, onChange: () => () => {}, reserve: async () => [],
+    observe: async values => p.observeBatch(state, lease, values),
     arm: async (g, limit) => p.arm(state, g, limit), pause: async g => p.pause(state, g), maintain: async (_g, now) => p.maintain(state, now),
     send: async (input, key) => { const m = p.prepareMessage(state, lease, input, key); bodies.set(m.id, input.text); return m; },
     listMessages: async g => Object.values(state.messages).filter(m => m.groupId === g.id).sort((a, b) => b.sequence - a.sequence),
@@ -51,21 +54,27 @@ function fixture(t) {
     registerTool: tool => tools.set(tool.name, tool), registerMessageRenderer: (name, renderer) => renderers.set(name, renderer),
     sendMessage: (...args) => delivered.push(args), getSessionName: () => 'Local', getActiveTools: () => activeTools,
   };
-  const ctx = { mode: 'tui', hasUI: true, isIdle: () => true, sessionManager: { getSessionFile: () => '/tmp/session.jsonl', getSessionId: () => 'local', getSessionName: () => 'Local' },
+  const ctx = { mode: 'tui', hasUI: true, isIdle: () => idle, sessionManager: { getSessionFile: () => '/tmp/session.jsonl', getSessionId: () => 'local', getSessionName: () => 'Local' },
     ui: { notify: (...args) => notices.push(args), setStatus: (...args) => statuses.push(args),
       confirm: async (...args) => { confirmations.push(args); return true; }, input: async () => 'Local', select: async (_, choices) => choices[0], editor: async () => 'human text' } };
   registerMessaging(
     pi,
-    async () => { connectCalls.push(++callSequence); closed = false; return backend; },
+    async () => { connectCalls.push(++callSequence); if (factoryError) throw factoryError; closed = false; return backend; },
     async () => { ensureCalls.push(++callSequence); if (ensureError) throw ensureError; },
+    { heartbeatMs, retryDelay, audit: { record: entry => audit.push(entry), openIds: () => [], setStates: () => {}, prune: () => {} } },
   );
   t.after(async () => { await events.get('session_shutdown')?.({}, ctx); });
   return {
-    state, group, other, backend, events, commands, tools, renderers, delivered, notices, statuses, confirmations, lifecycle,
-    ensureCalls, connectCalls, setEnsureError: error => { ensureError = error; }, activeTools, ctx, pi,
+    state, group, other, backend, events, commands, tools, renderers, delivered, notices, statuses, confirmations, lifecycle, audit,
+    ensureCalls, connectCalls, setEnsureError: error => { ensureError = error; }, setFactoryError: error => { factoryError = error; }, failHeartbeat: error => { heartbeatError = error; },
+    setReattachError: error => { reattachError = error; }, setIdle: value => { idle = value; }, setBody: (id, value) => bodies.set(id, value), activeTools, ctx, pi,
   };
 }
 async function execute(f, action, fields = {}) { return f.tools.get('peer_message').execute(randomUUID(), { action, ...fields }, undefined, undefined, f.ctx); }
+async function waitFor(predicate, message, timeout = 1000) {
+  const end = Date.now() + timeout;
+  while (!predicate()) { if (Date.now() >= end) assert.fail(message); await new Promise(resolve => setTimeout(resolve, 5)); }
+}
 async function moduleFiles(directory) {
   const files = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -533,6 +542,62 @@ test('messaging exposes identity only through the API and registers no context h
   for (const runtimeValue of [f.group.id, f.backend.peer.id, f.backend.peer.sessionId, String(f.backend.peer.lastSeen)]) {
     assert.equal(metadata.includes(runtimeValue), false);
   }
+});
+
+test('heartbeat timeout reconnects, reattaches the same lease, and resumes queued delivery without warning', { timeout: 2000 }, async t => {
+  const f = fixture(t, { heartbeatMs: 5, retryDelay: () => 0 }); f.setIdle(false);
+  await f.commands.get('messages').handler('join review', f.ctx); const lease = { ...f.backend.lease };
+  p.arm(f.state, f.group, 1);
+  const message = p.prepareMessage(f.state, p.leaseOf(f.other), { kind: 'notice', toPeerId: f.backend.peer.id, text: 'after reconnect' }, 'reconnect-delivery');
+  f.setBody(message.id, 'after reconnect');
+  f.backend.reserve = async () => p.admitBatch(f.state, f.backend.lease, [message.id]).map(value => ({ ...value, envelope: p.envelope(f.state, message, 'after reconnect') }));
+  f.failHeartbeat(new Error('broker timeout'));
+  await waitFor(() => f.connectCalls.length === 2 && f.lifecycle.reattaches.length === 1, 'runtime did not reconnect and reattach');
+  assert.deepEqual(f.lifecycle.reattaches[0], lease);
+  assert.ok(f.statuses.some(([, text]) => text === 'messages: reconnecting'));
+  assert.equal(f.notices.some(([, level]) => level === 'warning'), false);
+  f.setIdle(true); await f.events.get('agent_settled')({}, f.ctx);
+  await waitFor(() => f.delivered.length === 1, 'reattached runtime did not deliver queued work');
+  assert.match(f.delivered[0][0].content, /after reconnect/);
+});
+
+test('manual participation stops with one warning when its lease rotated while disconnected', { timeout: 2000 }, async t => {
+  const f = fixture(t, { heartbeatMs: 5, retryDelay: () => 0 });
+  await f.commands.get('messages').handler('join review', f.ctx);
+  f.setReattachError(new MessagingError('participation', 'lease rotated')); f.failHeartbeat(new Error('broker timeout'));
+  await waitFor(() => f.notices.some(([, level]) => level === 'warning'), 'rotated lease did not stop recovery');
+  const warnings = f.notices.filter(([, level]) => level === 'warning');
+  assert.equal(warnings.length, 1); assert.match(warnings[0][0], /participation.*ended|rejoin.*explicit/i);
+  await assert.rejects(execute(f, 'status'), /not active|reconnecting/i);
+});
+
+test('an uncertain send is audited once, never replayed, and keeps its spent credit through recovery', { timeout: 2000 }, async t => {
+  const f = fixture(t, { retryDelay: () => 0 }); f.state.groups[f.group.id].auto = true;
+  await f.commands.get('messages').handler('join review', f.ctx);
+  const original = f.backend.send.bind(f.backend); let sends = 0;
+  f.backend.send = async (...args) => { sends++; const message = await original(...args); throw new MessagingError('uncertain', 'send acknowledgement timed out', { uncertainMessage: message }); };
+  await assert.rejects(execute(f, 'send', { kind: 'notice', toPeerId: f.other.id, text: 'send once only' }), /timed out/i);
+  const credits = f.backend.peer?.credits;
+  await waitFor(() => f.lifecycle.reattaches.length === 1, 'uncertain send did not recover transport');
+  assert.equal(sends, 1); assert.equal(f.audit.length, 1); assert.equal(f.audit[0].state, 'uncertain'); assert.equal(f.audit[0].body, 'send once only');
+  assert.equal(f.backend.peer.credits, credits); assert.equal(Object.keys(f.state.messages).length, 1);
+});
+
+test('consecutive failed factories receive increasing retry attempts', { timeout: 2000 }, async t => {
+  const attempts = []; const f = fixture(t, { heartbeatMs: 5, retryDelay: attempt => { attempts.push(attempt); return 1; } });
+  await f.commands.get('messages').handler('join review', f.ctx); f.setFactoryError(new Error('broker offline')); f.failHeartbeat(new Error('connection lost'));
+  await waitFor(() => attempts.length >= 3, 'recovery did not back off across failures');
+  f.setFactoryError(undefined); await waitFor(() => f.lifecycle.reattaches.length === 1, 'recovery did not resume after factory recovered');
+  assert.deepEqual(attempts.slice(0, 3), [0, 1, 2]);
+});
+
+test('session shutdown cancels a pending recovery timer', { timeout: 2000 }, async t => {
+  const f = fixture(t, { heartbeatMs: 5, retryDelay: () => 100 });
+  await f.commands.get('messages').handler('join review', f.ctx); f.setFactoryError(new Error('broker offline')); f.failHeartbeat(new Error('connection lost'));
+  await waitFor(() => f.statuses.some(([, text]) => text === 'messages: reconnecting in 1s'), 'recovery retry was not scheduled');
+  await assert.rejects(execute(f, 'status'), /Messaging is reconnecting after a broker error; continue assigned work and do not poll\./);
+  await f.events.get('session_shutdown')({ reason: 'quit' }, f.ctx); const calls = f.connectCalls.length; f.setFactoryError(undefined);
+  await new Promise(resolve => setTimeout(resolve, 150)); assert.equal(f.connectCalls.length, calls);
 });
 
 test('busy work cannot enable admission; settling idle admits one queued message', { timeout: 2000 }, async t => {

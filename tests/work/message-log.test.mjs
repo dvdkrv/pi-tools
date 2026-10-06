@@ -58,6 +58,19 @@ test('message log inserts once, updates changed states, and lists open ids', asy
   assert.equal(store.listMessageLog().find((message) => message.id === 'm1').stateAt, '2026-09-25T08:03:00.000Z');
 });
 
+test('uncertain messages stay open and sticky until a terminal outcome is known', async () => {
+  const store = await memoryStore();
+  store.logMessage(entry('uncertain', '2026-09-25T08:00:00.000Z', { state: 'uncertain' }));
+  assert.deepEqual(store.openMessageIds(), ['uncertain']);
+  assert.equal(store.setMessageStates([{ id: 'uncertain', state: 'queued', at: '2026-09-25T08:01:00.000Z' }]), 0);
+  assert.equal(store.setMessageStates([{ id: 'uncertain', state: 'attempted', at: '2026-09-25T08:02:00.000Z' }]), 0);
+  assert.equal(store.listMessageLog()[0].state, 'uncertain');
+  assert.equal(store.setMessageStates([{ id: 'uncertain', state: 'observed', at: '2026-09-25T08:03:00.000Z' }]), 1);
+  assert.deepEqual(store.openMessageIds(), []);
+  assert.equal(store.listMessageLog()[0].state, 'observed');
+  assert.equal(messageStateLabel('uncertain'), 'uncertain (not resent)');
+});
+
 test('message log filters newest first by inclusive time, names, session prefix, and limit', async () => {
   const store = await memoryStore();
   store.logMessage(entry('m1', '2026-09-25T08:00:00.000Z', { senderName: 'Alpha One' }));
