@@ -8,6 +8,7 @@ interface LegacyLedgerV2 { version: 2; authorityId: string; sequence: number; gr
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const control = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
 export const ONLINE_WINDOW_MS = 30_000;
+export const LEDGER_REFRESH_MS = 10 * 60 * 1000;
 export const MEMBER_TTL_MS = 24 * 60 * 60 * 1000;
 export const QUEUED_TTL_MS = 60 * 60 * 1000;
 export const ATTEMPT_TTL_MS = 10 * 60 * 1000;
@@ -253,9 +254,9 @@ export function revokePeer(s: Ledger, ref: GroupRef, peerId: string, now = Date.
   if (!peer || peer.groupId !== group.id) fail('missing', 'Peer not in group');
   finalizePeer(s, peer, 'revoke', now);
 }
-export function heartbeat(s: Ledger, lease: ParticipantLease, displayName?: string): void {
+export function heartbeat(s: Ledger, lease: ParticipantLease, displayName?: string, now = Date.now()): void {
   const peer = authorizeLease(s, lease); const nextName = displayName === undefined ? undefined : validateDisplayName(displayName);
-  peer.lastSeen = Date.now(); if (nextName !== undefined) peer.displayName = nextName;
+  peer.lastSeen = Math.max(peer.lastSeen, lifecycleTime(now)); if (nextName !== undefined) peer.displayName = nextName;
 }
 export function arm(s: Ledger, ref: GroupRef, limit: number): void {
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) fail('validation', 'Allowance must be an integer from 1 to 100');

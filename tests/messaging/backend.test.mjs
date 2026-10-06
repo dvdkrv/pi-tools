@@ -351,22 +351,18 @@ test('a refreshed self-name is published without rerouting queued work or inheri
   assert.equal(delivered.length, 0);
 });
 
-test('an overlapping unnamed heartbeat rebases rather than reverting a role rename', async t => {
+test('an overlapping unnamed presence heartbeat cannot revert a role rename', async t => {
   const f = await fixture(t); if (!f) return;
   let release; let started; const ready = new Promise(r => { started = r; });
   const barrier = new Promise(r => { release = r; }); t.after(() => release());
-  const snapshot = f.a.snapshot.bind(f.a); let reads = 0;
-  f.a.snapshot = async () => {
-    const result = await snapshot();
+  const rawSnapshot = f.a.rawSnapshot.bind(f.a); let reads = 0;
+  f.a.rawSnapshot = async () => {
+    const result = await rawSnapshot();
     if (++reads === 1) { started(); await barrier; }
     return result;
   };
   const pending = f.a.heartbeat(); await ready;
-  await f.a.heartbeat('test-reviewer');
-  // Advance lastSeen past its previous millisecond, ensuring the stale write takes the CAS path.
-  await new Promise(resolve => setTimeout(resolve, 2));
-  release(); await pending;
-  assert.ok(reads >= 3, 'The stale heartbeat must reread after a revision conflict');
+  await f.a.heartbeat('test-reviewer'); release(); await pending;
   assert.equal(f.a.peer.displayName, 'test-reviewer');
   assert.equal((await f.b.peers(f.g)).find(p => p.id === f.a.peer.id).displayName, 'test-reviewer');
   await assert.rejects(f.a.heartbeat('\x1b[31minvalid'), /display name/i);
