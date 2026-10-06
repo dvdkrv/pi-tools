@@ -1,6 +1,6 @@
 import { connect, type NatsConnection, type Subscription } from '@nats-io/transport-node';
 import { AckPolicy, DeliverPolicy, DiscardPolicy, ReplayPolicy, RetentionPolicy, StorageType, JetStreamApiError, jetstream, jetstreamManager, type Consumer, type JetStreamClient, type JetStreamManager } from '@nats-io/jetstream';
-import { Kvm, type KV } from '@nats-io/kv';
+import { Kvm, KvWatchInclude, type KV, type KvWatchEntry } from '@nats-io/kv';
 import { setTimeout as delay } from 'node:timers/promises';
 import { MessagingError, type BrokerConfig, type Envelope, type GroupRef, type GroupSummary, type MessagingBackend, type MessageStatus, type ParticipantLease, type Peer, type Reservation, type Route, type SendInput } from './contracts.ts';
 import * as policy from './policy.ts';
@@ -10,6 +10,9 @@ const BUCKET = 'PM_CONTROL';
 const CHANGED = 'pm.changed';
 const subject = (m: MessageStatus) => `pm.message.${m.groupId}.${m.recipientPeerId}.${m.id}`;
 const consumerName = (peerId: string) => `peer_${peerId.replaceAll('-', '')}`;
+const presenceKey = (peerId: string) => `presence.${peerId}`;
+const peerIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+interface Presence { version: 1; peerId: string; leaseId: string; lastSeen: number }
 const apiCode = (error: unknown, code: number) => error instanceof JetStreamApiError && error.code === code;
 
 /** Provisioning is only called by explicit broker bootstrap, never by a Pi tool. */
@@ -62,7 +65,7 @@ export async function connectBackend(config: BrokerConfig, options: { initialize
     const bucket = (await jsm.streams.info(`KV_${BUCKET}`)).config;
     if (stream.storage !== StorageType.File || stream.retention !== RetentionPolicy.Limits || stream.discard !== DiscardPolicy.New || stream.max_age !== 0 || stream.max_msgs !== 2000 || stream.max_bytes !== 32 * 1024 * 1024 || stream.max_msg_size !== 65536 || stream.max_consumers !== 512 || stream.subjects?.join() !== 'pm.message.>' || bucket.storage !== StorageType.File || bucket.max_age !== 0 || bucket.max_msgs_per_subject !== 1 || bucket.max_bytes !== 8 * 1024 * 1024 || bucket.max_msg_size !== 2 * 1024 * 1024) policy.fail('configuration', 'Unsafe or incompatible broker stream configuration');
     const backend = new NatsBackend(nc, js, jsm, kv, config.authorityId);
-    await backend.snapshot();
+    await backend.initializePresence(); await backend.snapshot();
     return backend;
   } catch (error) { await nc.close(); throw error; }
 }
@@ -82,6 +85,10 @@ class NatsBackend implements MessagingBackend {
   private membershipGeneration = 0;
   private lastMaintenance = 0;
   private subscriptions = new Set<Subscription>();
+  private presence = new Map<string, { revision: number; value?: Presence }>();
+  private presenceWatch?: Awaited<ReturnType<KV['watch']>>;
+  private presenceTask?: Promise<void>;
+  private stopping = false;
   constructor(nc: NatsConnection, js: JetStreamClient, jsm: JetStreamManager, kv: KV, authorityId: string) {
     this.nc = nc; this.js = js; this.jsm = jsm; this.kv = kv; this.authorityId = authorityId;
   }
@@ -96,13 +103,45 @@ class NatsBackend implements MessagingBackend {
       throw new MessagingError('uncertain', `Broker operation failed or has an uncertain outcome; it was not retried, and messaging reconnects automatically. ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
-  async snapshot(): Promise<{ state: policy.Ledger; revision: number }> {
+  async initializePresence(): Promise<void> {
+    const watch = await this.io(() => this.kv.watch({ key: 'presence.>', include: KvWatchInclude.UpdatesOnly })); this.presenceWatch = watch;
+    this.presenceTask = (async () => {
+      try { for await (const entry of watch) this.mergePresence(entry); if (!this.stopping) this.failed = true; }
+      catch { if (!this.stopping) this.failed = true; }
+    })();
+    await this.io(async () => {
+      for await (const key of await this.kv.keys('presence.>')) { const entry = await this.kv.get(key); if (entry) this.mergePresence(entry); }
+    });
+  }
+  private mergePresence(entry: KvWatchEntry | NonNullable<Awaited<ReturnType<KV['get']>>>): void {
+    if (!entry.key.startsWith('presence.')) return;
+    const peerId = entry.key.slice('presence.'.length); const current = this.presence.get(peerId);
+    if (current && current.revision >= entry.revision) return;
+    let value: Presence | undefined;
+    if (entry.operation === 'PUT') try {
+      const candidate: unknown = entry.json();
+      if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+        const item = candidate as Record<string, unknown>;
+        if (item.version === 1 && item.peerId === peerId && peerIdPattern.test(peerId) && typeof item.leaseId === 'string' && peerIdPattern.test(item.leaseId) && typeof item.lastSeen === 'number' && Number.isFinite(item.lastSeen)) value = { version: 1, peerId, leaseId: item.leaseId, lastSeen: item.lastSeen };
+      }
+    } catch {}
+    this.presence.set(peerId, { revision: entry.revision, ...(value ? { value } : {}) });
+  }
+  private async rawSnapshot(): Promise<{ state: policy.Ledger; revision: number }> {
     const entry = await this.io(() => this.kv.get('state'));
     if (!entry || entry.operation !== 'PUT') { this.failed = true; policy.fail('missing', 'Messaging ledger missing; refusing to recreate allowance'); }
     try {
       const state: unknown = JSON.parse(entry.string()); policy.validateLedger(state, this.authorityId);
       return { state, revision: entry.revision };
     } catch (error) { this.failed = true; throw error; }
+  }
+  async snapshot(): Promise<{ state: policy.Ledger; revision: number }> {
+    const snapshot = await this.rawSnapshot();
+    for (const peer of Object.values(snapshot.state.peers)) {
+      const presence = this.presence.get(peer.id)?.value;
+      if (peer.active && !peer.suspended && presence?.leaseId === peer.leaseId) peer.lastSeen = Math.max(peer.lastSeen, presence.lastSeen);
+    }
+    return snapshot;
   }
   private notify(): void { if (!this.nc.isClosed()) this.nc.publish(CHANGED); }
   private async change<T>(mutate: (state: policy.Ledger) => T, uncertain?: (result: T) => MessagingError): Promise<T> {
@@ -280,8 +319,11 @@ class NatsBackend implements MessagingBackend {
       if (stored.groupId !== ref.id) policy.fail('participation', 'Peer does not belong to this group');
       const binding = await this.bindConsumer(stored.id, ref.id);
       if (generation !== this.membershipGeneration) policy.fail('participation', 'Reattach canceled by session departure');
-      this.participant = { peer: policy.publicPeer(stored), lease: { peerId: stored.id, leaseId: stored.leaseId } }; this.consumer = binding.consumer;
-      return policy.publicPeer(stored);
+      const seenAt = Date.now(); await this.putPresence(stored, seenAt);
+      if (generation !== this.membershipGeneration) { await this.purgePresence(stored.id); policy.fail('participation', 'Reattach canceled by session departure'); }
+      const peer = { ...policy.publicPeer(stored), lastSeen: Math.max(stored.lastSeen, seenAt) };
+      this.participant = { peer, lease: { peerId: stored.id, leaseId: stored.leaseId } }; this.consumer = binding.consumer;
+      return { ...peer };
     } finally { this.joining = false; settle(); if (this.membershipDone === done) this.membershipDone = undefined; }
   }
   async suspend(): Promise<void> {
@@ -295,7 +337,10 @@ class NatsBackend implements MessagingBackend {
     const participation = this.participant; this.participant = undefined; this.consumer = undefined;
     if (!participation || this.closed) return;
     await this.change(state => policy.leavePeer(state, participation.lease));
-    await this.deleteConsumer(consumerName(participation.peer.id));
+    await this.purgePresence(participation.peer.id); await this.deleteConsumer(consumerName(participation.peer.id));
+  }
+  private async purgePresence(peerId: string): Promise<void> {
+    try { await this.jsm.streams.purge(`KV_${BUCKET}`, { filter: `$KV.${BUCKET}.${presenceKey(peerId)}` }); } catch {}
   }
   private async deleteConsumer(name: string): Promise<void> {
     await this.io(async () => {
@@ -304,13 +349,20 @@ class NatsBackend implements MessagingBackend {
     });
   }
   private joined(): { peer: Peer; lease: ParticipantLease } { if (!this.participant) policy.fail('participation', 'Explicitly join a messaging group first'); return this.participant; }
+  private async putPresence(peer: { id: string; leaseId: string }, lastSeen: number): Promise<void> {
+    await this.io(() => this.kv.put(presenceKey(peer.id), JSON.stringify({ version: 1, peerId: peer.id, leaseId: peer.leaseId, lastSeen })));
+  }
   async heartbeat(displayName?: string): Promise<void> {
-    const participation = this.joined();
-    const peer = await this.change(state => {
-      policy.maintain(state); policy.heartbeat(state, participation.lease, displayName);
-      return policy.publicPeer(policy.requireLease(state, participation.lease));
-    });
-    participation.peer = peer;
+    const participation = this.joined(); const { state } = await this.rawSnapshot();
+    const stored = policy.requireLease(state, participation.lease); const now = Date.now();
+    const nextName = displayName === undefined ? stored.displayName : policy.validateDisplayName(displayName);
+    await this.putPresence(stored, now);
+    if (nextName !== stored.displayName || now - stored.lastSeen >= policy.LEDGER_REFRESH_MS) {
+      participation.peer = await this.change(ledger => {
+        policy.heartbeat(ledger, participation.lease, nextName, now + 1);
+        return policy.publicPeer(policy.requireLease(ledger, participation.lease));
+      });
+    } else participation.peer = { ...participation.peer, lastSeen: Math.max(participation.peer.lastSeen, stored.lastSeen, now) };
   }
   async arm(ref: GroupRef, limit: number): Promise<void> { await this.change(s => policy.arm(s, ref, limit)); }
   async pause(ref: GroupRef): Promise<void> { await this.change(s => policy.pause(s, ref)); }
@@ -420,7 +472,7 @@ class NatsBackend implements MessagingBackend {
   async resolveMessage(ref: GroupRef, id: string, state: 'canceled' | 'dismissed'): Promise<void> { await this.change(s => policy.resolveMessage(s, ref, id, state)); }
   async revoke(ref: GroupRef, id: string): Promise<void> {
     await this.change(state => policy.revokePeer(state, ref, id));
-    await this.deleteConsumer(consumerName(id));
+    await this.purgePresence(id); await this.deleteConsumer(consumerName(id));
   }
   async prune(ref: GroupRef, execute = false, before = Date.now() - policy.HISTORY_TTL_MS): Promise<string[]> {
     const { state } = await this.snapshot(); const ids = policy.prunable(state, ref, before);
@@ -436,6 +488,7 @@ class NatsBackend implements MessagingBackend {
     const current = (await this.snapshot()).state;
     const active = new Set(Object.values(current.peers).filter(p => p.active).map(p => consumerName(p.id)));
     for (const name of consumers) if (!active.has(name)) await this.deleteConsumer(name);
+    for (const id of this.presence.keys()) if (!current.peers[id]?.active) await this.purgePresence(id);
     await this.change(s => {
       if (!Object.hasOwn(s.groups, ref.id)) return;
       for (const id of policy.prunable(s, ref, before)) if (ids.includes(id)) delete s.messages[id];
@@ -452,9 +505,10 @@ class NatsBackend implements MessagingBackend {
     return () => { this.subscriptions.delete(sub); sub.unsubscribe(); };
   }
   async close(): Promise<void> {
-    this.membershipGeneration++;
+    this.membershipGeneration++; this.stopping = true;
     const pendingMembership = this.membershipDone; if (pendingMembership) await pendingMembership;
     for (const sub of this.subscriptions) sub.unsubscribe(); this.subscriptions.clear();
+    this.presenceWatch?.stop(); if (this.presenceTask) await this.presenceTask;
     await this.nc.close();
   }
 }
