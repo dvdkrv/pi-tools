@@ -59,7 +59,7 @@ export type WorkExtensionOptions = {
 
 export const PROPOSE_DESCRIPTION = "Propose a follow-up for the user's work triage inbox. Use only for work outside your current task's scope, or for work you would otherwise leave as \"not done yet\" at the end of the session. Do not propose normal progress on your own task. The user reviews every proposal; this tool cannot create items, change status, or contact Jira.";
 
-export const SESSION_STATUS_DESCRIPTION = "Write your complete reply to the user as visible text first; the user cannot see your thinking. Then, as the very last step of the turn, declare this session's state: `needs-me` when you are asking the user a question or need a decision (note: the question), `waiting-external` when blocked on CI, review, a deploy, or another person (note: what and why), `done` when the task is complete (note: one-line outcome). Call at most once per turn.";
+export const SESSION_STATUS_DESCRIPTION = "Write your complete reply to the user as visible text first; the user cannot see your thinking. Then, as the very last step of the turn, declare this session's state: `needs-me` when you are asking the user a question or need a decision (note: the question), `waiting-external` when blocked on CI, review, a deploy, or another person (note: what and why), `done` when the task is complete (note: one-line outcome). Call at most once per turn; once your reply is written, this call ends your turn.";
 
 export const JOB_REGISTER_DESCRIPTION = "Register a background job you started, such as a cron entry or a long-running process, so the user can see its health on the work dashboard. Give a check_command that exits 0 when the job is healthy, and a stop_command when stopping needs more than SIGTERM to pid. Registering the same name again updates the job.";
 
@@ -306,7 +306,8 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 				// Models often draft the reply only in thinking and then call this tool; make them write it.
 				const reminder = visibleTextThisRun ? "" : " Your reply is not visible yet: the user cannot see your thinking. Write your full answer now.";
 				const text = recorded ? `Recorded ${params.status}.${reminder}` : `Session status is not being recorded for this session.${reminder}`;
-				return { content: [{ type: "text", text }], details: { recorded } };
+				// With the reply already shown, end the run: a follow-up turn has nothing left to do, and models fill it by repeating their reply.
+				return { content: [{ type: "text", text }], details: { recorded }, ...(visibleTextThisRun ? { terminate: true } : {}) };
 			},
 		});
 

@@ -308,12 +308,15 @@ test('session_status reminds the agent to write its reply when the run has no vi
   const hidden = await s.tools.get('session_status').execute('c1', { status: 'needs-me', note: 'Save the plan?' }, undefined, undefined, s.ctx);
   assert.match(hidden.content[0].text, /^Recorded needs-me\. Your reply is not visible yet: the user cannot see your thinking\. Write your full answer now\.$/);
   assert.equal(hidden.details.recorded, true);
+  assert.notEqual(hidden.terminate, true, 'the agent still needs a turn to write its reply');
 
   // A later run that already showed text gets the plain confirmation.
   await s.emit('agent_start');
   await s.emit('message_end', { message: assistant('Here is the plan. Should I save it?') });
   const visible = await s.tools.get('session_status').execute('c2', { status: 'needs-me', note: 'Save the plan?' }, undefined, undefined, s.ctx);
   assert.equal(visible.content[0].text, 'Recorded needs-me.');
+  // The reply is already shown: end the run, so the model does not repeat it in a follow-up turn.
+  assert.equal(visible.terminate, true);
 });
 
 test('whitespace-only text does not count as a visible reply', async () => {
