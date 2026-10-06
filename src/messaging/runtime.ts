@@ -1,4 +1,4 @@
-import type { GroupRef, GroupSummary, MessagingBackend, Reservation } from './contracts.ts';
+import { MessagingError, type GroupRef, type GroupSummary, type MessagingBackend, type Reservation } from './contracts.ts';
 import { safeText } from './policy.ts';
 
 export const CUSTOM_TYPE = 'pi-messaging.peer.v1';
@@ -14,7 +14,7 @@ interface RuntimeHost {
   tick?(): Promise<void>;
   deliver(message: PeerMessage, options: { triggerTurn: true; deliverAs: 'followUp' }): void;
   status(summary: GroupSummary | undefined): void;
-  error(message: string): void;
+  error(message: string, cause: unknown): void;
 }
 export class MessagingRuntime {
   private backend: MessagingBackend;
@@ -30,7 +30,7 @@ export class MessagingRuntime {
   private pendingBatch?: Reservation[];
   private receiving = false;
   private heartbeatMs: number;
-  constructor(backend: MessagingBackend, group: GroupRef, host: RuntimeHost, heartbeatMs = 5000) {
+  constructor(backend: MessagingBackend, group: GroupRef, host: RuntimeHost, heartbeatMs = 10000) {
     if (!backend.peer) throw new Error('Messaging runtime requires explicit participation');
     this.backend = backend; this.group = group; this.host = host; this.peerId = backend.peer.id; this.heartbeatMs = heartbeatMs;
   }
@@ -51,15 +51,19 @@ export class MessagingRuntime {
     this.requested = true;
     if (this.flight) return this.flight;
     const generation = this.generation;
-    this.flight = this.pump(generation).catch(error => { if (generation === this.generation) this.fail(error); }).finally(() => { this.flight = undefined; });
+    this.flight = this.pump(generation).catch(error => { if (generation === this.generation) this.fail(error); }).finally(() => {
+      this.flight = undefined; if (this.requested && !this.stopped && generation === this.generation) void this.wake();
+    });
     return this.flight;
   }
   private async pump(generation: number): Promise<void> {
     while (this.requested && !this.stopped && generation === this.generation) {
       this.requested = false;
+      if (this.backend.closed) throw new MessagingError('unavailable', 'Messaging authority unavailable');
       const summary = await this.backend.getGroupSummary(this.group);
       if (generation !== this.generation) return;
-      if (!summary || this.backend.closed) throw new Error('Messaging authority unavailable');
+      if (this.backend.closed) throw new MessagingError('unavailable', 'Messaging authority unavailable');
+      if (!summary) throw new MessagingError('missing', 'Messaging group no longer exists');
       this.host.status(summary);
       if (!this.host.ready()) continue;
       const batch = await this.backend.reserve();
@@ -122,7 +126,7 @@ export class MessagingRuntime {
   private fail(error: unknown): void {
     if (this.stopped) return;
     this.deactivate();
-    this.host.error(`Messaging stopped: ${safeText(error instanceof Error ? error.message : String(error))}. Inspect /messages inbox, then leave/rejoin. Credits were not refunded.`);
+    this.host.error(`Messaging stopped: ${safeText(error instanceof Error ? error.message : String(error))}. Inspect /messages inbox, then leave/rejoin. Credits were not refunded.`, error);
   }
   async stop(disposition: 'suspend' | 'leave' = 'suspend'): Promise<void> {
     this.deactivate(); this.host.status(undefined);

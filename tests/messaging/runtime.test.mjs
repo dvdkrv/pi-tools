@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createJiti } from 'jiti';
-const { MessagingRuntime } = await createJiti(import.meta.url).import('../../src/messaging/runtime.ts');
+const jiti = createJiti(import.meta.url);
+const { MessagingRuntime } = await jiti.import('../../src/messaging/runtime.ts');
+const { MessagingError } = await jiti.import('../../src/messaging/contracts.ts');
 function deferred() { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; }
 function reservation(group, peer, index) {
   const message = { id: randomUUID(), sequence: index + 1 };
@@ -20,7 +22,7 @@ function fixture(count = 1) {
   let next = reservations; let ready = true;
   const backend = { peer, closed: false, getGroupSummary: async () => ({ group, remaining: 11, mode: 'armed' }), reserve: async () => { const value = next; next = []; return value; },
     observe: async values => { observed.push(values); }, suspend: async () => { dispositions.push('suspend'); }, leave: async () => { dispositions.push('leave'); }, heartbeat: async () => {}, maintain: async () => {}, onChange: () => () => {} };
-  const runtime = new MessagingRuntime(backend, group, { ready: () => ready, deliver: (...args) => calls.push(args), status: () => {}, error: text => errors.push(text) });
+  const runtime = new MessagingRuntime(backend, group, { ready: () => ready, deliver: (...args) => calls.push(args), status: () => {}, error: (text, cause) => errors.push({ text, cause }) });
   return { runtime, backend, group, reservations, calls, observed, errors, dispositions, setReady: value => { ready = value; } };
 }
 
@@ -126,7 +128,17 @@ test('uncertain transport outcome stops automatic admissions and emits one diagn
   f.backend.reserve = async () => { reserves++; throw new Error('uncertain reservation'); };
   await f.runtime.wake(); await f.runtime.wake(); await f.runtime.wake();
   assert.equal(reserves, 1); assert.equal(f.calls.length, 0); assert.equal(f.errors.length, 1);
+  assert.match(f.errors[0].text, /uncertain reservation/); assert.equal(f.errors[0].cause.message, 'uncertain reservation');
   await f.runtime.stop();
+});
+
+test('closed transport and deleted groups report distinct typed causes', async () => {
+  const closed = fixture(); closed.backend.closed = true; await closed.runtime.wake();
+  assert.ok(closed.errors[0].cause instanceof MessagingError); assert.equal(closed.errors[0].cause.code, 'unavailable');
+
+  const missing = fixture(); missing.backend.getGroupSummary = async () => null; await missing.runtime.wake();
+  assert.ok(missing.errors[0].cause instanceof MessagingError); assert.equal(missing.errors[0].cause.code, 'missing');
+  assert.equal(missing.errors[0].cause.message, 'Messaging group no longer exists');
 });
 
 test('matching synchronous receipt is accepted because the complete batch is installed before the Pi call', async () => {

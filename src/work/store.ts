@@ -1063,7 +1063,10 @@ export class WorkStore {
 	setMessageStates(updates: readonly { id: string; state: string; at: string }[]): number {
 		return this.transaction(() => {
 			let changed = 0;
-			for (const update of updates) changed += this.run("UPDATE message_log SET state = ?, state_at = ? WHERE id = ? AND state <> ?", update.state, update.at, update.id, update.state).changes;
+			for (const update of updates) changed += this.run(
+				"UPDATE message_log SET state = ?, state_at = ? WHERE id = ? AND state <> ? AND (state <> 'uncertain' OR ? IN ('observed', 'canceled', 'dismissed', 'expired', 'terminal-unresolved'))",
+				update.state, update.at, update.id, update.state, update.state,
+			).changes;
 			return changed;
 		});
 	}
