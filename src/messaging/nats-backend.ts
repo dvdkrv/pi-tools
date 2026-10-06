@@ -86,13 +86,14 @@ class NatsBackend implements MessagingBackend {
     this.nc = nc; this.js = js; this.jsm = jsm; this.kv = kv; this.authorityId = authorityId;
   }
   get peer(): Peer | undefined { return this.participant ? { ...this.participant.peer } : undefined; }
+  get lease(): ParticipantLease | undefined { return this.participant ? { ...this.participant.lease } : undefined; }
   get closed(): boolean { return this.failed || this.nc.isClosed(); }
   private async io<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.closed) policy.fail('unavailable', 'Messaging broker unavailable; explicitly leave/rejoin');
+    if (this.closed) policy.fail('unavailable', 'Messaging broker unavailable; messaging reconnects automatically');
     try { return await operation(); }
     catch (error) {
       this.failed = true;
-      throw new MessagingError('uncertain', `Broker operation failed or has an uncertain outcome; no automatic retry. Leave/rejoin after inspection. ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new MessagingError('uncertain', `Broker operation failed or has an uncertain outcome; it was not retried, and messaging reconnects automatically. ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
   async snapshot(): Promise<{ state: policy.Ledger; revision: number }> {
@@ -104,7 +105,7 @@ class NatsBackend implements MessagingBackend {
     } catch (error) { this.failed = true; throw error; }
   }
   private notify(): void { if (!this.nc.isClosed()) this.nc.publish(CHANGED); }
-  private async change<T>(mutate: (state: policy.Ledger) => T): Promise<T> {
+  private async change<T>(mutate: (state: policy.Ledger) => T, uncertain?: (result: T) => MessagingError): Promise<T> {
     for (let retry = 0; retry < 64; retry++) {
       const { state, revision } = await this.snapshot();
       const original = JSON.stringify(state);
@@ -117,7 +118,7 @@ class NatsBackend implements MessagingBackend {
         // Only the server's explicit wrong-revision response establishes no commit.
         if (apiCode(error, 10071)) { await delay(Math.min(50, retry * 2) + Math.random() * 10); continue; }
         this.failed = true;
-        throw new MessagingError('uncertain', 'Ledger write outcome uncertain; stop admissions and inspect before leave/rejoin');
+        throw uncertain?.(result) ?? new MessagingError('uncertain', 'Ledger write outcome uncertain; it was not retried, and messaging reconnects automatically');
       }
     }
     policy.fail('busy', 'Messaging ledger busy; operation was not committed');
@@ -265,6 +266,24 @@ class NatsBackend implements MessagingBackend {
       return { ...participation.peer };
     } finally { this.joining = false; settle(); if (this.membershipDone === done) this.membershipDone = undefined; }
   }
+  async reattach(ref: GroupRef, lease: ParticipantLease): Promise<Peer> {
+    if (this.participant || this.joining) policy.fail('participation', 'Leave the current group before reattaching');
+    this.joining = true;
+    let settle!: () => void;
+    const done = new Promise<void>(resolve => { settle = resolve; }); this.membershipDone = done;
+    const generation = ++this.membershipGeneration;
+    try {
+      // Reattach never writes the ledger: the lease must still be current, which fences
+      // any takeover, suspension, revocation, or expiry that happened while disconnected.
+      const { state } = await this.snapshot(); policy.groupOf(state, ref);
+      const stored = policy.requireLease(state, lease);
+      if (stored.groupId !== ref.id) policy.fail('participation', 'Peer does not belong to this group');
+      const binding = await this.bindConsumer(stored.id, ref.id);
+      if (generation !== this.membershipGeneration) policy.fail('participation', 'Reattach canceled by session departure');
+      this.participant = { peer: policy.publicPeer(stored), lease: { peerId: stored.id, leaseId: stored.leaseId } }; this.consumer = binding.consumer;
+      return policy.publicPeer(stored);
+    } finally { this.joining = false; settle(); if (this.membershipDone === done) this.membershipDone = undefined; }
+  }
   async suspend(): Promise<void> {
     this.membershipGeneration++;
     const participation = this.participant; this.participant = undefined; this.consumer = undefined;
@@ -312,7 +331,7 @@ class NatsBackend implements MessagingBackend {
     const committed = await this.change(state => {
       policy.maintain(state); const message = policy.prepareMessage(state, lease, input, requestKey, Date.now(), options);
       return { message, peer: policy.publicPeer(policy.requireLease(state, lease)) };
-    });
+    }, result => new MessagingError('uncertain', 'Message metadata write outcome uncertain; recorded as uncertain and not resent. Do not assume resending is safe.', { uncertainMessage: result.message }));
     participation.peer = committed.peer; const m = committed.message;
     // An idempotent retry of an attempted/terminal message must not republish it.
     if (m.state !== 'queued') return m;
@@ -320,10 +339,12 @@ class NatsBackend implements MessagingBackend {
     try { await this.js.publish(subject(m), JSON.stringify(body), { expect: { lastSubjectSequence: 0 } }); }
     catch (error) {
       if (apiCode(error, 10071)) {
-        const stored = await this.io(() => this.jsm.streams.getMessage(STREAM, { last_by_subj: subject(m) }));
-        if (!stored) { this.failed = true; policy.fail('uncertain', 'Conflicting publication disappeared; inspect messaging state'); }
+        let stored;
+        try { stored = await this.io(() => this.jsm.streams.getMessage(STREAM, { last_by_subj: subject(m) })); }
+        catch (failure) { throw failure instanceof MessagingError && failure.code === 'uncertain' ? new MessagingError('uncertain', failure.message, { uncertainMessage: m }) : failure; }
+        if (!stored) { this.failed = true; throw new MessagingError('uncertain', 'Conflicting publication disappeared; inspect messaging state', { uncertainMessage: m }); }
         policy.validateEnvelope(stored.json<Envelope>(), policy.newLedger(this.authorityId), m);
-      } else { this.failed = true; throw new MessagingError('uncertain', 'Message publication uncertain; metadata retained. Inspect the old inbox before explicitly composing a new message; do not assume resending is safe.'); }
+      } else { this.failed = true; throw new MessagingError('uncertain', 'Message publication uncertain; metadata retained and not resent. Do not assume resending is safe.', { uncertainMessage: m }); }
     }
     this.notify(); return m;
   }

@@ -30,11 +30,15 @@ export interface MessagingReader { getGroupSummary(ref: GroupRef): Promise<Group
 export interface MessagingBackend extends MessagingReader {
   readonly peer: Peer | undefined;
   readonly closed: boolean;
+  /** Private lease of the current participation; used only to reattach the same identity after a transport failure. */
+  readonly lease?: ParticipantLease;
   listGroups(): Promise<GroupRef[]>;
   createGroup(label: string, options?: { auto?: boolean; routeCooldownMs?: number }): Promise<GroupRef>;
   join(ref: GroupRef, info: { sessionId: string; displayName: string }): Promise<Peer>;
   resume(ref: GroupRef, peerId: string, sessionId: string): Promise<Peer>;
   takeover(ref: GroupRef, peerId: string, sessionId: string): Promise<Peer>;
+  /** Re-bind a still-current lease on a fresh connection without writing the ledger; fails with code 'participation' if the lease is no longer current. */
+  reattach?(ref: GroupRef, lease: ParticipantLease): Promise<Peer>;
   suspend(): Promise<void>;
   leave(): Promise<void>;
   heartbeat(displayName?: string): Promise<void>;
@@ -57,5 +61,10 @@ export interface MessagingBackend extends MessagingReader {
 export interface BrokerConfig { version: 1; authorityId: string; server: string; token: string; initialized: boolean }
 export class MessagingError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) { super(message); this.name = 'MessagingError'; this.code = code; }
+  /** For an uncertain send: the message metadata that may or may not have been committed. */
+  readonly uncertainMessage?: MessageStatus;
+  constructor(code: string, message: string, details: { uncertainMessage?: MessageStatus } = {}) {
+    super(message); this.name = 'MessagingError'; this.code = code;
+    if (details.uncertainMessage) this.uncertainMessage = details.uncertainMessage;
+  }
 }
