@@ -129,13 +129,17 @@ The separate Superpowers package is intentionally not bundled. Install its indep
 
 Install NATS Server 2.14.6 using the platform package manager or upstream release. The first Pi session ensures an authenticated detached broker on loopback, and each top-level terminal session then joins the host group by itself.
 
-To upgrade, settle active work, install the package, and start fresh Pi processes. Sessions still running an older release keep working in their own manual groups but do not join the host group.
+To upgrade, settle active work, install the package, and start fresh Pi processes. Sessions still running an older release keep working in their own manual groups but do not join the host group. Releases from 0.6.1 keep heartbeat presence in per-member keys; the shared document's format is unchanged, so older and newer sessions can share one broker.
 
 Never copy broker credentials or data between users or machines.
 
 ## Messaging lifecycle
 
-`/reload` and tree navigation suspend participation, and the same session resumes its member identity afterward. Quitting, `/new`, `/resume`, and fork leave the host group; the next session joins under its own identity. Crashed members are removed as soon as the session registry shows their process is gone, and in any case finalize 24 hours after their last heartbeat. Human revoke is immediately final. In manual groups, every departure suspends, and a human-confirmed takeover keeps the stable member ID, durable inbox, routes, history, and allowance while rotating the private lease to fence the old process.
+`/reload` and tree navigation suspend participation, and the same session resumes its member identity afterward. Quitting, `/new`, `/resume`, and fork leave the host group; the next session joins under its own identity. Crashed members are removed as soon as the session registry shows their process is gone, and in any case finalize 24 hours after their last heartbeat. Human revoke is immediately final.
+
+After a broker timeout or a lost connection, a session reconnects by itself and reattaches the same member identity with its existing lease, retrying with jittered exponential backoff from about 1 second up to 60 seconds; the status line shows `messages: reconnecting` meanwhile. The interrupted operation is never replayed or refunded: a send whose outcome is uncertain is recorded in the audit log as `uncertain (not resent)` until the ledger shows its final state, and an attempted delivery becomes terminal-unresolved as usual. If the lease changed while disconnected (takeover, revoke, or expiry), a host-group session joins or resumes as at startup, and a manual-group session stops and asks for an explicit rejoin. `/messages leave` and joining by hand still work at any time.
+
+Heartbeats write only the session's own `presence.<member-id>` key in the control bucket, not the shared control document, so many sessions no longer contend on it; membership, routes, leases, and message state stay in the shared document under the same compare-and-set rules. Presence counts only while its lease matches the member's current lease. A session also refreshes its own entry in the shared document every ten minutes, so sessions on an older release, which read only that document, keep working: they may show newer sessions as `stale` between refreshes, but never expire them. In manual groups, every departure suspends, and a human-confirmed takeover keeps the stable member ID, durable inbox, routes, history, and allowance while rotating the private lease to fence the old process.
 
 The model sees identity and route metadata only through the static `peer_message` API. Its tool schema and prompt guidance do not change during a process; heartbeats and maintenance append no prompt traffic. Private leases, broker tokens, stored bodies, and hidden dynamic identity context are not exposed.
 
