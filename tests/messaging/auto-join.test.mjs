@@ -218,3 +218,25 @@ test('two broker-backed auto-joined extensions exchange one request and reply', 
   const replyResult = value(await participants[1].tools.get('peer_message').execute('reply', { action: 'send', kind: 'reply', toPeerId: backends[0].peer.id, text: 'reply body', inReplyTo: requestResult.id }, undefined, undefined, participants[1].ctx));
   assert.equal(replyResult.kind, 'reply'); assert.equal((await backends[0].listMessages((await backends[0].listGroups())[0])).length, 2);
 });
+
+test('a broker restart is recovered automatically with the same member identity and no ledger replay', { timeout: 30_000 }, async t => {
+  const broker = await brokerFixture(t); if (!broker) return;
+  await (await connectBackend(broker.config, { initialize: true })).close();
+  const events = new Map(); const tools = new Map(); const statuses = []; const notices = []; let factories = 0;
+  const pi = { on: (name, handler) => events.set(name, handler), registerTool: tool => tools.set(tool.name, tool), registerCommand: () => {}, registerMessageRenderer: () => {}, sendMessage: () => {} };
+  const ctx = { mode: 'tui', hasUI: true, cwd: '/tmp/restart', isIdle: () => true,
+    sessionManager: { getSessionFile: () => '/tmp/restart.jsonl', getSessionId: () => 'restart' }, ui: { notify: (...args) => notices.push(args), setStatus: (...args) => statuses.push(args) } };
+  registerMessaging(pi, async () => { factories++; return connectBackend(broker.config); }, async () => {}, { heartbeatMs: 50, retryDelay: () => 100,
+    settings: () => ({ autoJoin: true, sendsPerHour: 10, paused: false, retentionDays: 30, routeCooldownMinutes: 10 }) });
+  t.after(async () => { await events.get('session_shutdown')({ reason: 'quit' }, ctx); });
+  await events.get('session_start')({ reason: 'startup' }, ctx);
+  const peers = async () => value(await tools.get('peer_message').execute('peers', { action: 'peers' }, undefined, undefined, ctx));
+  const before = await peers();
+  await broker.stop();
+  await waitFor(() => statuses.some(([, text]) => /reconnecting/.test(text ?? '')), 'broker loss was not noticed', 5000);
+  await broker.start();
+  await waitFor(() => factories >= 2 && /^messages restart: \d+\/10 sends left/.test(statuses.at(-1)?.[1] ?? ''), `did not recover: ${JSON.stringify(statuses.at(-1))}`, 15_000);
+  const after = await peers();
+  assert.equal(after.selfId, before.selfId, 'the same member identity is reattached');
+  assert.equal(notices.filter(([, level]) => level === 'warning').length, 0, 'transient loss shows status only');
+});

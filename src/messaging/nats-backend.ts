@@ -160,7 +160,7 @@ class NatsBackend implements MessagingBackend {
         throw uncertain?.(result) ?? new MessagingError('uncertain', 'Ledger write outcome uncertain; it was not retried, and messaging reconnects automatically');
       }
     }
-    policy.fail('busy', 'Messaging ledger busy; operation was not committed');
+    policy.fail('contended', 'Messaging ledger busy; operation was not committed');
   }
   async listGroups(): Promise<GroupRef[]> { return Object.values((await this.snapshot()).state.groups).map(policy.refOf); }
   async createGroup(label: string, options?: { auto?: boolean; routeCooldownMs?: number }): Promise<GroupRef> { return this.change(s => policy.createGroup(s, label, options)); }
