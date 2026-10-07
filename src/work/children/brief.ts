@@ -66,9 +66,11 @@ export function resolveBrief(params: BriefParams, config: ChildrenConfig, repo: 
 	if (model && !modelReason) return { error: "model needs model_reason" };
 	const modelError = modelVerdict(model ?? config.defaultModel, model === null, config.allowedModels);
 	if (modelError) return { error: modelError };
-	const from = params.from?.trim() || null;
-	if (from && !implement) return { error: "from applies only to implement runs" };
+	const requestedFrom = params.from?.trim() || null;
 	const notes: string[] = [];
+	// Some models fill every parameter; a read-only run has no branch to continue, so drop from instead of refusing.
+	const from = implement ? requestedFrom : null;
+	if (requestedFrom && !implement) notes.push(`Ignored from ${requestedFrom}: read-only runs always start fresh.`);
 	let budgetLines: number | null = null;
 	let budgetFiles: number | null = null;
 	if (implement) {

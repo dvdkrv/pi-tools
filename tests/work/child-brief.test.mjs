@@ -17,6 +17,9 @@ test('an implement brief takes the default model and budget, and caps requested 
 test('a read-only brief has no budget and needs no scope or acceptance', () => {
   const r = resolveBrief({ goal: 'Map the auth flow', kind: 'read-only' }, DEFAULT_CHILDREN, null);
   assert.deepEqual([r.budgetLines, r.budgetFiles, r.brief.scope, r.brief.acceptance, r.brief.repo], [null, null, [], [], null]);
+  // Some models fill every parameter; from cannot apply to a run without a branch, so it is dropped with a note, not refused.
+  const filled = resolveBrief({ goal: 'Review the RFC', kind: 'read-only', from: 'C-40', budget: { lines: 1, files: 1 } }, DEFAULT_CHILDREN, null);
+  assert.deepEqual([filled.error, filled.brief.from, filled.budgetLines, filled.notes], [undefined, null, null, ['Ignored from C-40: read-only runs always start fresh.']]);
 });
 
 test('invalid briefs are refused with a reason', () => {
@@ -33,7 +36,6 @@ test('invalid briefs are refused with a reason', () => {
     [{ ...base, context: 'x'.repeat(4001) }, /context must be at most 4000 characters/],
     [{ ...base, model: 'openai/gpt-5.6' }, /model needs model_reason/],
     [{ ...base, budget: { lines: 0 } }, /budget lines and files must be positive integers/],
-    [{ goal: 'x', kind: 'read-only', from: 'C-1' }, /from applies only to implement runs/],
   ];
   for (const [params, pattern] of cases) assert.match(resolveBrief(params, DEFAULT_CHILDREN, 'api').error, pattern);
 });
