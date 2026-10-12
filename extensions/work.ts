@@ -114,8 +114,8 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 		// Child mode: guards and a parent watchdog, active only when a lead started this session.
 		const childRunId = env[CHILD_RUN_ENV]?.trim() || undefined;
 		let guard: ChildGuard | undefined = childRunId ? failClosedGuard("Blocked: child guards have not started yet.") : undefined;
-		// Whether the current agent run has shown the user any non-empty text (see session_status).
-		let visibleTextThisRun = false;
+		// Whether the latest assistant message, the one calling session_status, showed non-empty text; earlier narration does not count.
+		let lastMessageShowedText = false;
 		let stopWatchdog: (() => void) | undefined;
 		const startChild = (ctx: ExtensionContext): void => {
 			if (!childRunId) return;
@@ -304,10 +304,10 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			async execute(_toolCallId, params) {
 				const recorded = tracker.declare(params.status, params.note);
 				// Models often draft the reply only in thinking and then call this tool; make them write it.
-				const reminder = visibleTextThisRun ? "" : " Your reply is not visible yet: the user cannot see your thinking. Write your full answer now.";
+				const reminder = lastMessageShowedText ? "" : " Your reply is not visible yet: the user cannot see your thinking. Write your full answer now.";
 				const text = recorded ? `Recorded ${params.status}.${reminder}` : `Session status is not being recorded for this session.${reminder}`;
 				// With the reply already shown, end the run: a follow-up turn has nothing left to do, and models fill it by repeating their reply.
-				return { content: [{ type: "text", text }], details: { recorded }, ...(visibleTextThisRun ? { terminate: true } : {}) };
+				return { content: [{ type: "text", text }], details: { recorded }, ...(lastMessageShowedText ? { terminate: true } : {}) };
 			},
 		});
 
@@ -458,16 +458,16 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 			tracker.input(event.text, event.source);
 		});
 		pi.on("agent_start", async () => {
-			visibleTextThisRun = false;
+			lastMessageShowedText = false;
 			tracker.agentStart();
 		});
 		pi.on("message_end", async (event) => {
 			const message = event.message as unknown as { role?: string; content?: unknown; usage?: Usage };
 			if (message.role !== "assistant") return;
-			if (Array.isArray(message.content) && message.content.some((part) => {
+			lastMessageShowedText = Array.isArray(message.content) && message.content.some((part) => {
 				const block = part as { type?: string; text?: string };
 				return block.type === "text" && typeof block.text === "string" && block.text.trim().length > 0;
-			})) visibleTextThisRun = true;
+			});
 			if (childRunId && message.usage) guard?.assistantCost(message.usage);
 		});
 		pi.on("agent_end", async (event) => {

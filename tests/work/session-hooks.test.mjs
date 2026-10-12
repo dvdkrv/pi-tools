@@ -319,6 +319,19 @@ test('session_status reminds the agent to write its reply when the run has no vi
   assert.equal(visible.terminate, true);
 });
 
+test('earlier narration does not count as the reply: the message calling session_status must show text', async () => {
+  const rt = await memoryRuntime();
+  const s = setup({ runtime: rt });
+  await s.emit('session_start', { reason: 'startup' });
+  await s.emit('agent_start');
+  await s.emit('message_end', { message: assistant('Checking the logs:') });
+  // The final answer was drafted only in thinking, in the message that calls the tool.
+  await s.emit('message_end', { message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'The fix is in; tell the user.' }, { type: 'toolCall', name: 'session_status', arguments: {} }] } });
+  const result = await s.tools.get('session_status').execute('c1', { status: 'done', note: 'Fixed' }, undefined, undefined, s.ctx);
+  assert.match(result.content[0].text, /Your reply is not visible yet/);
+  assert.notEqual(result.terminate, true, 'the agent still needs a turn to write its answer');
+});
+
 test('whitespace-only text does not count as a visible reply', async () => {
   const rt = await memoryRuntime();
   const s = setup({ runtime: rt });
