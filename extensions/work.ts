@@ -6,7 +6,7 @@ import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { AskUserAnswer } from "../src/work/ask-user.ts";
-import { ASK_USER_DESCRIPTION, ASK_USER_NO_UI, AskUserParams, answerText, askUserComponent, askUserNote, askUserProblem } from "../src/work/ask-user.ts";
+import { ASK_USER_DESCRIPTION, ASK_USER_NO_TEXT, ASK_USER_NO_UI, AskUserParams, answerText, askUserComponent, askUserNote, askUserProblem } from "../src/work/ask-user.ts";
 import { captureItem } from "../src/work/capture.ts";
 import type { ChildGuard } from "../src/work/children/child-guard.ts";
 import { CHILD_RUN_ENV, createChildGuard, failClosedGuard, PARENT_PID_ENV } from "../src/work/children/child-guard.ts";
@@ -344,6 +344,8 @@ export function createWorkExtension(options: WorkExtensionOptions = {}) {
 					if (ctx.mode !== "tui" || !ctx.hasUI) return reply(ASK_USER_NO_UI, null);
 					const problem = askUserProblem(params);
 					if (problem) return { ...reply(problem, null), isError: true };
+					// Models draft answers in thinking and then ask about them; the dialog would refer to text the user never saw.
+					if (!lastMessageShowedText) return reply(ASK_USER_NO_TEXT, null);
 					const dismissed: AskUserAnswer = { kind: "dismissed" };
 					if (signal?.aborted) return reply(answerText(dismissed), dismissed);
 					notifySession(ctx, tracker.asking(askUserNote(params)));

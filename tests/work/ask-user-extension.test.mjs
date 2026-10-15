@@ -58,7 +58,12 @@ function setup({ runtime, env = IN_TMUX, mode = 'tui', onOpen = () => {}, before
     },
   };
   const emit = (name, event = {}) => events.get(name)(event, ctx);
-  const ask = (params = PARAMS, signal) => tools.get('ask_user').execute('c1', params, signal, undefined, ctx);
+  // The assistant message that calls ask_user ends first; by default it shows text, as a real call should.
+  const ask = async (params = PARAMS, signal, { shown = true } = {}) => {
+    const lead = shown ? { type: 'text', text: 'Two runners fit; here is the trade-off.' } : { type: 'thinking', thinking: 'Two runners fit.' };
+    await emit('message_end', { message: { role: 'assistant', content: [lead, { type: 'toolCall', name: 'ask_user', arguments: params }] } });
+    return tools.get('ask_user').execute('c1', params, signal, undefined, ctx);
+  };
   return { tools, emit, ask, ctx, writes, active: () => active };
 }
 
@@ -184,4 +189,17 @@ test('ask_user is model-only in a terminal session, inactive without a TUI, and 
 
   const child = setup({ runtime: rt, mode: 'rpc', env: { PI_WORK_CHILD_RUN: 'C-7' } });
   assert.equal(child.tools.has('ask_user'), false);
+});
+
+test('a question whose message shows no text is not asked: the user cannot see thinking', async () => {
+  const rt = await memoryRuntime();
+  let opened = false;
+  const s = setup({ runtime: rt, onOpen: (component) => { opened = true; keys(component, '\x1b'); } });
+  await s.emit('session_start', { reason: 'startup' });
+  await s.emit('agent_start');
+  const result = await s.ask(PARAMS, undefined, { shown: false });
+  assert.equal(opened, false, 'no dialog opens');
+  assert.equal(result.details.answer, null);
+  assert.match(result.content[0].text, /^Not asked: your message showed no text/);
+  assert.notEqual(rt.store.getSession('sess-1')?.status, 'needs-me', 'the session is not marked as asking');
 });

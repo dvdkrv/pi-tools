@@ -7,9 +7,10 @@ import { INITIAL_KEY_STATE, keyStep, moveIndex } from "./keymap.ts";
 import { NOTE_MAX } from "./types.ts";
 
 export const ASK_USER_DESCRIPTION =
-	"Ask the user one question with 2 to 6 discrete options and wait for the answer, which comes back as this tool's result. Use it for decisions with discrete options; mark the option you recommend with `recommended`. For open-ended discussion, write normal text and end with session_status needs-me instead.";
+	"Ask the user one question with 2 to 6 discrete options and wait for the answer, which comes back as this tool's result. Use it for decisions with discrete options; mark the option you recommend with `recommended`. The user cannot see your thinking: write what you are asking about as visible text in the same message, before this call. For open-ended discussion, write normal text and end with session_status needs-me instead.";
 export const ASK_USER_DISMISSED = "The user dismissed the question; ask in plain text or proceed without it.";
 export const ASK_USER_NO_UI = "ask_user cannot show a dialog in this session. Ask the question in plain text instead and end with session_status needs-me.";
+export const ASK_USER_NO_TEXT = "Not asked: your message showed no text, and the user cannot see your thinking. Write what the question refers to (your answer, summary, or the choices explained) as visible text, then call ask_user again in that same message.";
 
 const OTHER_LABEL = "Type something else…";
 
